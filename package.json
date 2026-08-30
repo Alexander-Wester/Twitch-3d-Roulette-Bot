@@ -1,0 +1,27 @@
+{
+  "name": "twitch-3d-roulette-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alexander-Wester/Twitch-3d-Roulette-Bot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Alexander-Wester/Twitch-3d-Roulette-Bot/issues"
+  },
+  "homepage": "https://github.com/Alexander-Wester/Twitch-3d-Roulette-Bot#readme",
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.20.0",
+    "dotenv": "^17.4.2",
+    "three": "^0.185.1",
+    "ws": "^8.21.3"
+  }
+}
