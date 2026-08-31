@@ -69,6 +69,29 @@ const BALL_START_SPEED =
         BALL_START_SPEED_MIN
     );
 
+// Small physical launch imperfections.
+const LAUNCH_DIRECTION_JITTER_DEGREES = 1.5;
+const INITIAL_SPIN_JITTER_FRACTION = 0.05;
+
+const LAUNCH_DIRECTION_JITTER_RADIANS =
+    (
+        Math.random() *
+        2 -
+        1
+    ) *
+    LAUNCH_DIRECTION_JITTER_DEGREES *
+    Math.PI /
+    180;
+
+const INITIAL_SPIN_MULTIPLIER =
+    1 +
+    (
+        Math.random() *
+        2 -
+        1
+    ) *
+    INITIAL_SPIN_JITTER_FRACTION;
+
 // Overall roulette dimensions.
 const TABLE_RADIUS = 5.55;
 
@@ -213,8 +236,10 @@ const CROWN_LIP_OUTER_RADIUS =
 const CROWN_LIP_Y_OFFSET =
     0.035;
 
+// Thin visual-only lines climbing the bowl.
+// Reduced from 0.030 for a cleaner OBS look.
 const CROWN_LANE_RADIUS =
-    0.030;
+    0.018;
 
 const CROWN_LANE_Y_OFFSET =
     0.018;
@@ -232,11 +257,70 @@ const CROWN_NUMBER_SIZE =
 const ROTOR_OUTER_RADIUS = 2.70;
 const ROTOR_INNER_RADIUS = 1.58;
 
-// The floor sits just below the inner edge of the bowl.
-// This keeps the transition shallow rather than making
-// the ball free-fall into the wheel.
-const ROTOR_FLOOR_TOP_Y = BOWL_BASE_Y;
+// The numbered rotor physically spins opposite the ball.
+//
+// Positive Y rotation moves the rotor toward decreasing atan2(z, x)
+// angles, while the ball launches toward increasing angles.
+//
+// Roughly 5.3-7.2 RPM: visibly moving, but slow enough that the
+// large OBS crown numbers remain readable as they orbit.
+const ROTOR_ANGULAR_SPEED_MIN = 0.55;
+const ROTOR_ANGULAR_SPEED_MAX = 0.75;
+
+const ROTOR_ANGULAR_SPEED =
+    ROTOR_ANGULAR_SPEED_MIN +
+    Math.random() *
+    (
+        ROTOR_ANGULAR_SPEED_MAX -
+        ROTOR_ANGULAR_SPEED_MIN
+    );
+
+// Equivalent to the wheel already having been spinning before
+// the ball appears. Later, the Twitch round countdown can simply
+// leave this rotor running for its randomized 10-12 second window.
+const ROTOR_START_ANGLE =
+    Math.random() *
+    Math.PI *
+    2;
+
+let rotorAngle =
+    ROTOR_START_ANGLE;
+
+// A ball resting in a moving pocket still has world-space speed.
+// Settle therefore uses velocity RELATIVE to the rotating rotor.
+const SETTLE_RELATIVE_SPEED = 0.18;
+const SETTLE_HOLD_TIME = 0.35;
+
+// The floor is deliberately recessed below the inner edge of
+// the bowl. The ball can enter freely by dropping downward,
+// while the height difference helps retain it once inside.
+// Sink the numbered rotor below the bowl edge.
+//
+// This creates a downward drop INTO the pockets without adding
+// an inward-facing lip that the ball has to climb over.
+//
+// Entry therefore stays easy, but once the ball has dropped
+// into the moving rotor it must climb back upward to escape
+// onto the bowl.
+const ROTOR_DROP_DEPTH = 0.15;
+
+const ROTOR_FLOOR_TOP_Y =
+    BOWL_BASE_Y -
+    ROTOR_DROP_DEPTH;
+
 const ROTOR_FLOOR_HALF_HEIGHT = 0.08;
+
+// Moving pocket geometry stops at the bottom of a fixed
+// downhill transition ramp.
+const ROTOR_POCKET_OUTER_RADIUS = 2.52;
+
+const ROTOR_ENTRY_RAMP_INNER_RADIUS =
+    ROTOR_POCKET_OUTER_RADIUS;
+
+const ROTOR_ENTRY_RAMP_OUTER_RADIUS =
+    BOWL_INNER_RADIUS;
+
+const ROTOR_ENTRY_RAMP_SEGMENTS = 256;
 
 // Low frets: enough to define pockets, not tall pegs.
 const DIVIDER_HEIGHT = 0.040;
@@ -246,7 +330,7 @@ const DIVIDER_INNER_RADIUS =
     ROTOR_INNER_RADIUS + 0.03;
 
 const DIVIDER_OUTER_RADIUS =
-    ROTOR_OUTER_RADIUS - 0.03;
+    ROTOR_POCKET_OUTER_RADIUS - 0.03;
 
 const DIVIDER_LENGTH =
     DIVIDER_OUTER_RADIUS -
@@ -504,12 +588,22 @@ const tableGroup =
 const rotorGroup =
     new THREE.Group();
 
+// The oversized OBS crown is a visual extension of the numbered
+// rotor. It rotates in perfect sync with the physical pockets so
+// every large outer number always represents the real pocket below.
+const crownGroup =
+    new THREE.Group();
+
 scene.add(
     tableGroup
 );
 
 scene.add(
     rotorGroup
+);
+
+scene.add(
+    crownGroup
 );
 
 
@@ -538,8 +632,10 @@ const tableBase =
         tableBaseMaterial
     );
 
+// Lower the solid wood top below the recessed pocket visuals.
+// Previously its top face covered the red/black/green wedges.
 tableBase.position.y =
-    -0.43;
+    -0.58;
 
 tableBase.receiveShadow = true;
 
@@ -937,6 +1033,159 @@ createBowlCollider();
 
 
 // ============================================================
+// FIXED DOWNHILL CATCH RAMP INTO THE ROTOR
+// ============================================================
+//
+// This closes the transition between the stationary bowl and
+// the recessed moving pocket floor.
+//
+// OUTER: r = 2.70 at bowl height.
+// INNER: r = 2.54 at recessed pocket-floor height.
+//
+// The ball rolls DOWN this surface to enter.
+// To escape back outward, it must climb the same slope.
+// ============================================================
+
+function createRotorEntryRampCollider() {
+    const vertices = [];
+    const indices = [];
+
+    for (
+        let segment = 0;
+        segment < ROTOR_ENTRY_RAMP_SEGMENTS;
+        segment++
+    ) {
+        const angle =
+            segment /
+            ROTOR_ENTRY_RAMP_SEGMENTS *
+            Math.PI *
+            2;
+
+        const c =
+            Math.cos(angle);
+
+        const s =
+            Math.sin(angle);
+
+        vertices.push(
+            c *
+                ROTOR_ENTRY_RAMP_INNER_RADIUS,
+            ROTOR_FLOOR_TOP_Y,
+            s *
+                ROTOR_ENTRY_RAMP_INNER_RADIUS
+        );
+
+        vertices.push(
+            c *
+                ROTOR_ENTRY_RAMP_OUTER_RADIUS,
+            BOWL_BASE_Y,
+            s *
+                ROTOR_ENTRY_RAMP_OUTER_RADIUS
+        );
+    }
+
+    for (
+        let segment = 0;
+        segment < ROTOR_ENTRY_RAMP_SEGMENTS;
+        segment++
+    ) {
+        const next =
+            (
+                segment + 1
+            ) %
+            ROTOR_ENTRY_RAMP_SEGMENTS;
+
+        const inner =
+            segment * 2;
+
+        const outer =
+            inner + 1;
+
+        const nextInner =
+            next * 2;
+
+        const nextOuter =
+            nextInner + 1;
+
+        indices.push(
+            inner,
+            nextInner,
+            outer
+        );
+
+        indices.push(
+            outer,
+            nextInner,
+            nextOuter
+        );
+    }
+
+    physicsWorld.createCollider(
+        RAPIER.ColliderDesc
+            .trimesh(
+                new Float32Array(
+                    vertices
+                ),
+                new Uint32Array(
+                    indices
+                ),
+                RAPIER
+                    .TriMeshFlags
+                    .FIX_INTERNAL_EDGES
+            )
+            .setFriction(
+                BOWL_FRICTION
+            )
+            .setRestitution(
+                ZERO_BOUNCE
+            )
+    );
+}
+
+createRotorEntryRampCollider();
+
+
+const rotorEntryRampGeometry =
+    new THREE.LatheGeometry(
+        [
+            new THREE.Vector2(
+                ROTOR_ENTRY_RAMP_INNER_RADIUS,
+                ROTOR_FLOOR_TOP_Y +
+                    0.003
+            ),
+            new THREE.Vector2(
+                ROTOR_ENTRY_RAMP_OUTER_RADIUS,
+                BOWL_BASE_Y +
+                    0.003
+            )
+        ],
+        ROTOR_ENTRY_RAMP_SEGMENTS
+    );
+
+rotorEntryRampGeometry.computeVertexNormals();
+
+const rotorEntryRampMaterial =
+    new THREE.MeshStandardMaterial({
+        color: 0x9c7a38,
+        metalness: 0.30,
+        roughness: 0.34,
+        side: THREE.DoubleSide
+    });
+
+const rotorEntryRamp =
+    new THREE.Mesh(
+        rotorEntryRampGeometry,
+        rotorEntryRampMaterial
+    );
+
+rotorEntryRamp.receiveShadow = true;
+
+scene.add(
+    rotorEntryRamp
+);
+
+
+// ============================================================
 // VISIBLE BOWL
 // ============================================================
 
@@ -1035,7 +1284,7 @@ crownLip.rotation.x =
 crownLip.position.y =
     crownLipY;
 
-scene.add(
+crownGroup.add(
     crownLip
 );
 
@@ -1107,7 +1356,7 @@ function createBowlDividerLane(
             crownLineMaterial
         );
 
-    scene.add(
+    crownGroup.add(
         lane
     );
 }
@@ -1155,7 +1404,7 @@ function createLipDividerLine(
     line.rotation.y =
         -angle;
 
-    scene.add(
+    crownGroup.add(
         line
     );
 }
@@ -1576,11 +1825,11 @@ for (
     ] =
         halo;
 
-    scene.add(
+    crownGroup.add(
         halo
     );
 
-    scene.add(
+    crownGroup.add(
         marker
     );
 }
@@ -1611,7 +1860,7 @@ crownOuterTrim.position.y =
     crownLipY +
     0.015;
 
-scene.add(
+crownGroup.add(
     crownOuterTrim
 );
 
@@ -1656,25 +1905,55 @@ scene.add(
 // ROTOR FLOOR - PHYSICAL
 // ============================================================
 //
-// The rotor floor is now EXACTLY flush with the inner edge of
-// the bowl. There is no vertical collision lip to wait for.
+// The numbered rotor is intentionally LOWER than the inner
+// edge of the bowl.
 //
-// The steeper inner funnel therefore feeds the ball directly
-// onto the numbered rotor while it still has useful speed.
+// There is no raised obstruction on entry: the ball crosses the
+// inner bowl edge and drops downward into the pockets.
+//
+// The lower floor makes it much harder for the moving rotor to
+// carry a settled ball back upward onto the bowl.
 // Restitution remains zero.
 // ============================================================
 
-const rotorFloorBody =
+// One kinematic rigid body owns the entire numbered rotor:
+// floor + dividers + center hub.
+//
+// Rapier infers the body's velocity from setNextKinematicRotation(),
+// so contacts with the rotating floor/dividers receive real moving-
+// surface physics rather than a visual-only rotation.
+const rotorBody =
     physicsWorld.createRigidBody(
         RAPIER.RigidBodyDesc
-            .fixed()
+            .kinematicPositionBased()
     );
+
+{
+    const halfAngle =
+        rotorAngle / 2;
+
+    rotorBody.setRotation(
+        {
+            x: 0,
+            y:
+                Math.sin(
+                    halfAngle
+                ),
+            z: 0,
+            w:
+                Math.cos(
+                    halfAngle
+                )
+        },
+        true
+    );
+}
 
 physicsWorld.createCollider(
     RAPIER.ColliderDesc
         .cylinder(
             ROTOR_FLOOR_HALF_HEIGHT,
-            ROTOR_OUTER_RADIUS
+            ROTOR_POCKET_OUTER_RADIUS
         )
         .setTranslation(
             0,
@@ -1688,7 +1967,7 @@ physicsWorld.createCollider(
         .setRestitution(
             ZERO_BOUNCE
         ),
-    rotorFloorBody
+    rotorBody
 );
 
 
@@ -1731,7 +2010,7 @@ for (
     const geometry =
         new THREE.RingGeometry(
             ROTOR_INNER_RADIUS,
-            ROTOR_OUTER_RADIUS,
+            ROTOR_POCKET_OUTER_RADIUS,
             8,
             1,
             index *
@@ -1931,7 +2210,8 @@ for (
             );
 
     physicsWorld.createCollider(
-        dividerCollider
+        dividerCollider,
+        rotorBody
     );
 
     const divider =
@@ -2025,12 +2305,6 @@ const CENTER_HUB_CENTER_Y =
     ROTOR_FLOOR_TOP_Y +
     CENTER_HUB_HALF_HEIGHT;
 
-const centerHubBody =
-    physicsWorld.createRigidBody(
-        RAPIER.RigidBodyDesc
-            .fixed()
-    );
-
 physicsWorld.createCollider(
     RAPIER.ColliderDesc
         .cylinder(
@@ -2048,7 +2322,7 @@ physicsWorld.createCollider(
         .setRestitution(
             ZERO_BOUNCE
         ),
-    centerHubBody
+    rotorBody
 );
 
 
@@ -2259,18 +2533,23 @@ ballBody.enableCcd(
 // correct horizontal launch vector from ANY random start point.
 // ============================================================
 
+const launchDirectionAngle =
+    START_ANGLE +
+    Math.PI / 2 +
+    LAUNCH_DIRECTION_JITTER_RADIANS;
+
 const launchVelocity = {
     x:
-        -Math.sin(
-            START_ANGLE
+        Math.cos(
+            launchDirectionAngle
         ) *
         BALL_START_SPEED,
 
     y: 0,
 
     z:
-        Math.cos(
-            START_ANGLE
+        Math.sin(
+            launchDirectionAngle
         ) *
         BALL_START_SPEED
 };
@@ -2307,6 +2586,9 @@ const startAngularVelocity =
         )
         .divideScalar(
             BALL_RADIUS
+        )
+        .multiplyScalar(
+            INITIAL_SPIN_MULTIPLIER
         );
 
 ballBody.setAngvel(
@@ -2344,23 +2626,57 @@ let freeRevolutions = 0;
 let enteredRotor = false;
 let settledPocketLogged = false;
 
+let settleCandidatePocketIndex =
+    null;
+
+let settleCandidateTime = 0;
+
+function normalizeAngle(
+    angle
+) {
+    let value =
+        angle %
+        (
+            Math.PI * 2
+        );
+
+    if (
+        value < 0
+    ) {
+        value +=
+            Math.PI * 2;
+    }
+
+    return value;
+}
+
+
+// The pockets rotate with rotorAngle.
+//
+// Three/Rapier positive Y rotation moves a local +X point toward
+// world -Z. Therefore:
+//
+//     local pocket angle = world ball angle + rotorAngle
+//
+// Winner lookup MUST use this rotor-local angle.
 function getCurrentPocketIndex(
     position
 ) {
-    let angle =
+    const worldAngle =
         Math.atan2(
             position.z,
             position.x
         );
 
-    if (angle < 0) {
-        angle +=
-            Math.PI * 2;
-    }
+    const rotorLocalAngle =
+        normalizeAngle(
+            worldAngle +
+            rotorAngle
+        );
 
     return (
         Math.floor(
-            angle /
+            rotorLocalAngle /
             POCKET_ANGLE
         ) %
         POCKET_COUNT
@@ -2377,6 +2693,24 @@ function getCurrentPocketNumber(
         )
     ];
 }
+
+function getRotorSurfaceVelocity(
+    position
+) {
+    // omega x radius for omega = (0, +ROTOR_ANGULAR_SPEED, 0)
+    return {
+        x:
+            ROTOR_ANGULAR_SPEED *
+            position.z,
+
+        y: 0,
+
+        z:
+            -ROTOR_ANGULAR_SPEED *
+            position.x
+    };
+}
+
 
 function updateMeasurement() {
     const position =
@@ -2487,51 +2821,107 @@ function updateMeasurement() {
         const velocity =
             ballBody.linvel();
 
-        const speed =
-            Math.sqrt(
-                velocity.x *
-                    velocity.x +
-                velocity.y *
-                    velocity.y +
-                velocity.z *
-                    velocity.z
+        const rotorVelocity =
+            getRotorSurfaceVelocity(
+                position
             );
 
-        if (
-            speed <
-                0.22 &&
+        const relativeVelocity = {
+            x:
+                velocity.x -
+                rotorVelocity.x,
+
+            y:
+                velocity.y -
+                rotorVelocity.y,
+
+            z:
+                velocity.z -
+                rotorVelocity.z
+        };
+
+        const relativeSpeed =
+            Math.sqrt(
+                relativeVelocity.x *
+                    relativeVelocity.x +
+                relativeVelocity.y *
+                    relativeVelocity.y +
+                relativeVelocity.z *
+                    relativeVelocity.z
+            );
+
+        const insidePocketRing =
             radius >
                 ROTOR_INNER_RADIUS &&
             radius <
-                ROTOR_OUTER_RADIUS +
-                    BALL_RADIUS
+                ROTOR_POCKET_OUTER_RADIUS +
+                    BALL_RADIUS;
+
+        if (
+            relativeSpeed <
+                SETTLE_RELATIVE_SPEED &&
+            insidePocketRing
         ) {
-            settledPocketLogged = true;
-
-            const winningNumber =
-                getCurrentPocketNumber(
-                    position
-                );
-
-            console.log(
-                "BALL SETTLED",
-                "| number:",
-                winningNumber,
-                "| free revs before rotor:",
-                freeRevolutions.toFixed(3)
-            );
-
-            showWinningNumber(
-                winningNumber
-            );
-
-            winningCrownPocketIndex =
+            const pocketIndex =
                 getCurrentPocketIndex(
                     position
                 );
 
-            activeCrownPocketIndex =
-                winningCrownPocketIndex;
+            if (
+                settleCandidatePocketIndex ===
+                    pocketIndex
+            ) {
+                settleCandidateTime +=
+                    FIXED_TIME_STEP;
+
+            } else {
+                settleCandidatePocketIndex =
+                    pocketIndex;
+
+                settleCandidateTime =
+                    FIXED_TIME_STEP;
+            }
+
+            // Require the ball to remain slow RELATIVE to the same
+            // moving pocket briefly. This prevents a winner from
+            // being declared during a transient pass over a divider.
+            if (
+                settleCandidateTime >=
+                    SETTLE_HOLD_TIME
+            ) {
+                settledPocketLogged = true;
+
+                const winningNumber =
+                    rouletteNumbers[
+                        pocketIndex
+                    ];
+
+                console.log(
+                    "BALL SETTLED",
+                    "| number:",
+                    winningNumber,
+                    "| relative speed:",
+                    relativeSpeed.toFixed(3),
+                    "| free revs before rotor:",
+                    freeRevolutions.toFixed(3)
+                );
+
+                showWinningNumber(
+                    winningNumber
+                );
+
+                winningCrownPocketIndex =
+                    pocketIndex;
+
+                activeCrownPocketIndex =
+                    winningCrownPocketIndex;
+            }
+
+        } else {
+            settleCandidatePocketIndex =
+                null;
+
+            settleCandidateTime = 0;
         }
     }
 }
@@ -2568,9 +2958,79 @@ console.log(
         180 /
         Math.PI
     ).toFixed(1) + "deg",
+    "| direction jitter:",
+    (
+        LAUNCH_DIRECTION_JITTER_RADIANS *
+        180 /
+        Math.PI
+    ).toFixed(2) + "deg",
+    "| spin multiplier:",
+    INITIAL_SPIN_MULTIPLIER.toFixed(3),
+    "| rotor speed:",
+    ROTOR_ANGULAR_SPEED.toFixed(3) + " rad/s",
+    "| rotor rpm:",
+    (
+        ROTOR_ANGULAR_SPEED *
+        60 /
+        (
+            Math.PI * 2
+        )
+    ).toFixed(2),
+    "| rotor start angle:",
+    (
+        ROTOR_START_ANGLE *
+        180 /
+        Math.PI
+    ).toFixed(1) + "deg",
     "| launch vector:",
     `(${launchVelocity.x.toFixed(2)}, ${launchVelocity.y.toFixed(2)}, ${launchVelocity.z.toFixed(2)})`
 );
+
+
+// ============================================================
+// ROTOR PHYSICS
+// ============================================================
+
+function advanceRotorPhysics() {
+    rotorAngle +=
+        ROTOR_ANGULAR_SPEED *
+        FIXED_TIME_STEP;
+
+    // Quaternion rotation has a 4π period. Wrapping there keeps
+    // values bounded for a long-running overlay without introducing
+    // a quaternion sign discontinuity at 2π.
+    if (
+        rotorAngle >
+        Math.PI * 4
+    ) {
+        rotorAngle -=
+            Math.PI * 4;
+    }
+
+    const halfAngle =
+        rotorAngle / 2;
+
+    rotorBody.setNextKinematicRotation({
+        x: 0,
+        y:
+            Math.sin(
+                halfAngle
+            ),
+        z: 0,
+        w:
+            Math.cos(
+                halfAngle
+            )
+    });
+}
+
+
+// Keep both visual representations aligned from the first frame.
+rotorGroup.rotation.y =
+    rotorAngle;
+
+crownGroup.rotation.y =
+    rotorAngle;
 
 
 // ============================================================
@@ -2613,7 +3073,11 @@ function animate(
         physicsAccumulator >=
         FIXED_TIME_STEP
     ) {
-        // The physics world is the ONLY thing advancing
+        // Move the physical numbered rotor first. Rapier infers
+        // the kinematic angular velocity and applies it to contacts.
+        advanceRotorPhysics();
+
+        // The physics world is still the ONLY thing advancing
         // the ball after launch.
         physicsWorld.step();
 
@@ -2681,6 +3145,14 @@ function animate(
             `speed: ${speed.toFixed(2)}`
         );
     }
+
+    // Visual wheel and oversized OBS crown follow the exact same
+    // angle used by the physical kinematic rotor.
+    rotorGroup.rotation.y =
+        rotorAngle;
+
+    crownGroup.rotation.y =
+        rotorAngle;
 
     updateCrownFlashes(
         currentTime

@@ -1,6 +1,13 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 const { performance } = require("node:perf_hooks");
+const {
+    Worker,
+    isMainThread,
+    parentPort,
+    workerData
+} = require("node:worker_threads");
 
 (async () => {
     const rapierModule =
@@ -20,11 +27,11 @@ const { performance } = require("node:perf_hooks");
 //
 // Run:
 //
-//   node src/roulette_batch_test.js 1000
+//   node src/rouletteBatchTest.mjs 1000
 //
 // or:
 //
-//   node src/roulette_batch_test.js 10000
+//   node src/rouletteBatchTest.mjs 10000
 //
 // This is diagnostic-only and does not need to ship with the app.
 // ============================================================
@@ -40,6 +47,9 @@ const BALL_RADIUS = 0.14;
 
 const BALL_START_SPEED_MIN = 11.5;
 const BALL_START_SPEED_MAX = 12.5;
+
+const LAUNCH_DIRECTION_JITTER_DEGREES = 1.5;
+const INITIAL_SPIN_JITTER_FRACTION = 0.05;
 
 const BOWL_INNER_RADIUS = 2.70;
 const BOWL_OUTER_RADIUS = 5.00;
@@ -123,8 +133,31 @@ const POCKET_ANGLE =
 const ROTOR_OUTER_RADIUS = 2.70;
 const ROTOR_INNER_RADIUS = 1.58;
 
-const ROTOR_FLOOR_TOP_Y = BOWL_BASE_Y;
+// Physical numbered rotor speed.
+// Positive Y rotation is opposite the ball's launch direction.
+const ROTOR_ANGULAR_SPEED_MIN = 0.55;
+const ROTOR_ANGULAR_SPEED_MAX = 0.75;
+
+// Must match roulette.js.
+// The rotor is recessed below the bowl so entry is downward,
+// while escape back onto the bowl requires climbing upward.
+const ROTOR_DROP_DEPTH = 0.15;
+
+const ROTOR_FLOOR_TOP_Y =
+    BOWL_BASE_Y -
+    ROTOR_DROP_DEPTH;
+
 const ROTOR_FLOOR_HALF_HEIGHT = 0.08;
+
+const ROTOR_POCKET_OUTER_RADIUS = 2.52;
+
+const ROTOR_ENTRY_RAMP_INNER_RADIUS =
+    ROTOR_POCKET_OUTER_RADIUS;
+
+const ROTOR_ENTRY_RAMP_OUTER_RADIUS =
+    BOWL_INNER_RADIUS;
+
+const ROTOR_ENTRY_RAMP_SEGMENTS = 256;
 
 const DIVIDER_HEIGHT = 0.040;
 const DIVIDER_THICKNESS = 0.018;
@@ -133,7 +166,7 @@ const DIVIDER_INNER_RADIUS =
     ROTOR_INNER_RADIUS + 0.03;
 
 const DIVIDER_OUTER_RADIUS =
-    ROTOR_OUTER_RADIUS - 0.03;
+    ROTOR_POCKET_OUTER_RADIUS - 0.03;
 
 const DIVIDER_LENGTH =
     DIVIDER_OUTER_RADIUS -
@@ -161,7 +194,8 @@ const CENTER_HUB_CENTER_Y =
 // TEST SETTINGS
 // ============================================================
 
-const SETTLED_SPEED_THRESHOLD = 0.22;
+const SETTLE_RELATIVE_SPEED = 0.18;
+const SETTLE_HOLD_TIME = 0.35;
 
 const MAX_SIM_SECONDS = 30;
 
@@ -354,13 +388,73 @@ function getPocketIndexFromAngle(angle) {
     );
 }
 
-function getPocketIndexFromPosition(position) {
+function getPocketIndexFromPosition(
+    position,
+    rotorAngle
+) {
     return getPocketIndexFromAngle(
         Math.atan2(
             position.z,
             position.x
-        )
+        ) +
+        rotorAngle
     );
+}
+
+
+function getRotorSurfaceVelocity(
+    position,
+    rotorAngularSpeed
+) {
+    return {
+        x:
+            rotorAngularSpeed *
+            position.z,
+
+        y: 0,
+
+        z:
+            -rotorAngularSpeed *
+            position.x
+    };
+}
+
+
+function setRotorRotation(
+    rotorBody,
+    angle,
+    useNextPose
+) {
+    const halfAngle =
+        angle / 2;
+
+    const rotation = {
+        x: 0,
+        y:
+            Math.sin(
+                halfAngle
+            ),
+        z: 0,
+        w:
+            Math.cos(
+                halfAngle
+            )
+    };
+
+    if (
+        useNextPose
+    ) {
+        rotorBody
+            .setNextKinematicRotation(
+                rotation
+            );
+
+    } else {
+        rotorBody.setRotation(
+            rotation,
+            true
+        );
+    }
 }
 
 function getColor(number) {
@@ -537,19 +631,118 @@ function createWorld() {
     );
 
 
-    // ---------------- ROTOR FLOOR ----------------
+    // ---------------- FIXED ENTRY / CATCH RAMP ----------------
 
-    const rotorFloorBody =
+    {
+        const rampVertices = [];
+        const rampIndices = [];
+
+        for (
+            let segment = 0;
+            segment < ROTOR_ENTRY_RAMP_SEGMENTS;
+            segment++
+        ) {
+            const angle =
+                segment /
+                ROTOR_ENTRY_RAMP_SEGMENTS *
+                Math.PI *
+                2;
+
+            const c =
+                Math.cos(angle);
+
+            const s =
+                Math.sin(angle);
+
+            rampVertices.push(
+                c *
+                    ROTOR_ENTRY_RAMP_INNER_RADIUS,
+                ROTOR_FLOOR_TOP_Y,
+                s *
+                    ROTOR_ENTRY_RAMP_INNER_RADIUS
+            );
+
+            rampVertices.push(
+                c *
+                    ROTOR_ENTRY_RAMP_OUTER_RADIUS,
+                BOWL_BASE_Y,
+                s *
+                    ROTOR_ENTRY_RAMP_OUTER_RADIUS
+            );
+        }
+
+        for (
+            let segment = 0;
+            segment < ROTOR_ENTRY_RAMP_SEGMENTS;
+            segment++
+        ) {
+            const next =
+                (
+                    segment + 1
+                ) %
+                ROTOR_ENTRY_RAMP_SEGMENTS;
+
+            const inner =
+                segment * 2;
+
+            const outer =
+                inner + 1;
+
+            const nextInner =
+                next * 2;
+
+            const nextOuter =
+                nextInner + 1;
+
+            rampIndices.push(
+                inner,
+                nextInner,
+                outer
+            );
+
+            rampIndices.push(
+                outer,
+                nextInner,
+                nextOuter
+            );
+        }
+
+        world.createCollider(
+            RAPIER.ColliderDesc
+                .trimesh(
+                    new Float32Array(
+                        rampVertices
+                    ),
+                    new Uint32Array(
+                        rampIndices
+                    ),
+                    RAPIER
+                        .TriMeshFlags
+                        .FIX_INTERNAL_EDGES
+                )
+                .setFriction(
+                    BOWL_FRICTION
+                )
+                .setRestitution(
+                    ZERO_BOUNCE
+                )
+        );
+    }
+
+
+    // ---------------- ROTATING ROTOR ----------------
+
+    const rotorBody =
         world.createRigidBody(
             RAPIER.RigidBodyDesc
-                .fixed()
+                .kinematicPositionBased()
         );
 
     world.createCollider(
         RAPIER.ColliderDesc
             .cylinder(
                 ROTOR_FLOOR_HALF_HEIGHT,
-                ROTOR_OUTER_RADIUS
+                ROTOR_POCKET_OUTER_RADIUS
             )
             .setTranslation(
                 0,
@@ -563,7 +756,7 @@ function createWorld() {
             .setRestitution(
                 ZERO_BOUNCE
             ),
-        rotorFloorBody
+        rotorBody
     );
 
 
@@ -619,18 +812,13 @@ function createWorld() {
                 )
                 .setRestitution(
                     ZERO_BOUNCE
-                )
+                ),
+            rotorBody
         );
     }
 
 
     // ---------------- CENTER HUB ----------------
-
-    const centerHubBody =
-        world.createRigidBody(
-            RAPIER.RigidBodyDesc
-                .fixed()
-        );
 
     world.createCollider(
         RAPIER.ColliderDesc
@@ -649,10 +837,13 @@ function createWorld() {
             .setRestitution(
                 ZERO_BOUNCE
             ),
-        centerHubBody
+        rotorBody
     );
 
-    return world;
+    return {
+        world,
+        rotorBody
+    };
 }
 
 
@@ -662,6 +853,7 @@ function createWorld() {
 
 function simulateSpin(
     world,
+    rotorBody,
     trial
 ) {
     const speed =
@@ -676,6 +868,52 @@ function simulateSpin(
         Math.random() *
         Math.PI *
         2;
+
+    const launchDirectionJitterRadians =
+        (
+            Math.random() *
+            2 -
+            1
+        ) *
+        LAUNCH_DIRECTION_JITTER_DEGREES *
+        Math.PI /
+        180;
+
+    const launchDirectionJitterDeg =
+        launchDirectionJitterRadians *
+        180 /
+        Math.PI;
+
+    const initialSpinMultiplier =
+        1 +
+        (
+            Math.random() *
+            2 -
+            1
+        ) *
+        INITIAL_SPIN_JITTER_FRACTION;
+
+    const rotorAngularSpeed =
+        ROTOR_ANGULAR_SPEED_MIN +
+        Math.random() *
+        (
+            ROTOR_ANGULAR_SPEED_MAX -
+            ROTOR_ANGULAR_SPEED_MIN
+        );
+
+    const rotorStartAngle =
+        Math.random() *
+        Math.PI *
+        2;
+
+    let rotorAngle =
+        rotorStartAngle;
+
+    setRotorRotation(
+        rotorBody,
+        rotorAngle,
+        false
+    );
 
     const start =
         getBallCenterAtContact(
@@ -717,15 +955,24 @@ function simulateSpin(
     ballBody.enableCcd(true);
 
 
+    const launchDirectionAngle =
+        startAngle +
+        Math.PI / 2 +
+        launchDirectionJitterRadians;
+
     const launchVelocity = {
         x:
-            -Math.sin(startAngle) *
+            Math.cos(
+                launchDirectionAngle
+            ) *
             speed,
 
         y: 0,
 
         z:
-            Math.cos(startAngle) *
+            Math.sin(
+                launchDirectionAngle
+            ) *
             speed
     };
 
@@ -745,15 +992,18 @@ function simulateSpin(
         {
             x:
                 spin.x /
-                BALL_RADIUS,
+                BALL_RADIUS *
+                initialSpinMultiplier,
 
             y:
                 spin.y /
-                BALL_RADIUS,
+                BALL_RADIUS *
+                initialSpinMultiplier,
 
             z:
                 spin.z /
-                BALL_RADIUS
+                BALL_RADIUS *
+                initialSpinMultiplier
         },
         true
     );
@@ -769,9 +1019,15 @@ function simulateSpin(
     let freeRevolutions = 0;
     let enteredRotor = false;
 
+    let settleCandidatePocketIndex =
+        null;
+
+    let settleCandidateTime = 0;
+
     const startPocketIndex =
         getPocketIndexFromAngle(
-            startAngle
+            startAngle +
+            rotorStartAngle
         );
 
     let result = null;
@@ -782,6 +1038,24 @@ function simulateSpin(
         step <= MAX_STEPS;
         step++
     ) {
+        rotorAngle +=
+            rotorAngularSpeed *
+            FIXED_TIME_STEP;
+
+        if (
+            rotorAngle >
+            Math.PI * 4
+        ) {
+            rotorAngle -=
+                Math.PI * 4;
+        }
+
+        setRotorRotation(
+            rotorBody,
+            rotorAngle,
+            true
+        );
+
         world.step();
 
         const position =
@@ -841,58 +1115,123 @@ function simulateSpin(
 
 
         if (enteredRotor) {
-            const currentSpeed =
-                vectorLength(
-                    ballBody.linvel()
+            const velocity =
+                ballBody.linvel();
+
+            const rotorVelocity =
+                getRotorSurfaceVelocity(
+                    position,
+                    rotorAngularSpeed
                 );
 
-            if (
-                currentSpeed <
-                    SETTLED_SPEED_THRESHOLD &&
+            const relativeVelocity = {
+                x:
+                    velocity.x -
+                    rotorVelocity.x,
+
+                y:
+                    velocity.y -
+                    rotorVelocity.y,
+
+                z:
+                    velocity.z -
+                    rotorVelocity.z
+            };
+
+            const relativeSpeed =
+                vectorLength(
+                    relativeVelocity
+                );
+
+            const insidePocketRing =
                 radius >
                     ROTOR_INNER_RADIUS &&
                 radius <
-                    ROTOR_OUTER_RADIUS +
-                    BALL_RADIUS
+                    ROTOR_POCKET_OUTER_RADIUS +
+                        BALL_RADIUS;
+
+            if (
+                relativeSpeed <
+                    SETTLE_RELATIVE_SPEED &&
+                insidePocketRing
             ) {
                 const winnerIndex =
                     getPocketIndexFromPosition(
-                        position
+                        position,
+                        rotorAngle
                     );
 
-                const winner =
-                    rouletteNumbers[
+                if (
+                    settleCandidatePocketIndex ===
                         winnerIndex
-                    ];
+                ) {
+                    settleCandidateTime +=
+                        FIXED_TIME_STEP;
 
-                result = {
-                    trial,
-                    speed,
-                    startAngleDeg:
-                        startAngle *
-                        180 /
-                        Math.PI,
-                    startPocketIndex,
-                    winnerIndex,
-                    winner,
-                    color:
-                        getColor(winner),
-                    pocketOffset:
-                        (
-                            winnerIndex -
-                            startPocketIndex +
-                            POCKET_COUNT
-                        ) %
-                        POCKET_COUNT,
-                    freeRevolutions,
-                    settleSeconds:
-                        step *
-                        FIXED_TIME_STEP,
-                    timedOut:
-                        false
-                };
+                } else {
+                    settleCandidatePocketIndex =
+                        winnerIndex;
 
-                break;
+                    settleCandidateTime =
+                        FIXED_TIME_STEP;
+                }
+
+                if (
+                    settleCandidateTime >=
+                        SETTLE_HOLD_TIME
+                ) {
+                    const winner =
+                        rouletteNumbers[
+                            winnerIndex
+                        ];
+
+                    result = {
+                        trial,
+                        speed,
+                        startAngleDeg:
+                            startAngle *
+                            180 /
+                            Math.PI,
+
+                        launchDirectionJitterDeg,
+
+                        initialSpinMultiplier,
+
+                        rotorAngularSpeed,
+
+                        rotorStartAngleDeg:
+                            rotorStartAngle *
+                            180 /
+                            Math.PI,
+
+                        startPocketIndex,
+                        winnerIndex,
+                        winner,
+                        color:
+                            getColor(winner),
+                        pocketOffset:
+                            (
+                                winnerIndex -
+                                startPocketIndex +
+                                POCKET_COUNT
+                            ) %
+                            POCKET_COUNT,
+                        freeRevolutions,
+                        settleSeconds:
+                            step *
+                            FIXED_TIME_STEP,
+                        timedOut:
+                            false
+                    };
+
+                    break;
+                }
+
+            } else {
+                settleCandidatePocketIndex =
+                    null;
+
+                settleCandidateTime = 0;
             }
         }
     }
@@ -906,6 +1245,18 @@ function simulateSpin(
                 startAngle *
                 180 /
                 Math.PI,
+
+            launchDirectionJitterDeg,
+
+            initialSpinMultiplier,
+
+            rotorAngularSpeed,
+
+            rotorStartAngleDeg:
+                rotorStartAngle *
+                180 /
+                Math.PI,
+
             startPocketIndex,
             winnerIndex: null,
             winner: null,
@@ -1099,6 +1450,10 @@ function makeCsv(results) {
             "trial",
             "launch_speed",
             "start_angle_deg",
+            "launch_direction_jitter_deg",
+            "initial_spin_multiplier",
+            "rotor_angular_speed_rad_s",
+            "rotor_start_angle_deg",
             "start_sector_index",
             "winner_index",
             "winner",
@@ -1115,6 +1470,10 @@ function makeCsv(results) {
             result.trial,
             result.speed.toFixed(6),
             result.startAngleDeg.toFixed(6),
+            result.launchDirectionJitterDeg.toFixed(6),
+            result.initialSpinMultiplier.toFixed(6),
+            result.rotorAngularSpeed.toFixed(6),
+            result.rotorStartAngleDeg.toFixed(6),
             result.startPocketIndex,
             result.winnerIndex ?? "",
             result.winner ?? "",
@@ -1130,338 +1489,743 @@ function makeCsv(results) {
 }
 
 
+
 // ============================================================
-// MAIN
+// MULTICORE RUNNER
 // ============================================================
 
-const requestedTrials =
-    Number(
-        process.argv[2]
-    );
-
-const trials =
-    Number.isFinite(
-        requestedTrials
-    ) &&
-    requestedTrials > 0
-        ? Math.floor(
-            requestedTrials
-        )
-        : 1000;
-
-
-console.log("");
-console.log("============================================================");
-console.log("ROULETTE BATCH PHYSICS TEST");
-console.log("============================================================");
-console.log(`Trials: ${trials.toLocaleString()}`);
-console.log(
-    `Launch speed range: ` +
-    `${BALL_START_SPEED_MIN.toFixed(1)} - ` +
-    `${BALL_START_SPEED_MAX.toFixed(1)}`
-);
-console.log("Random start angle: 0° - 360°");
-console.log("Rendering: disabled");
-console.log("");
-
-
-const world =
-    createWorld();
-
-const results = [];
-
-const started =
-    performance.now();
-
-
-for (
-    let trial = 1;
-    trial <= trials;
-    trial++
-) {
-    results.push(
-        simulateSpin(
-            world,
-            trial
-        )
-    );
-
+function getAvailableParallelism() {
     if (
-        trial % 100 === 0 ||
-        trial === trials
+        typeof os.availableParallelism ===
+        "function"
     ) {
-        const elapsedSeconds =
-            (
-                performance.now() -
-                started
-            ) /
-            1000;
+        return os.availableParallelism();
+    }
 
-        const rate =
-            trial /
+    return os.cpus().length;
+}
+
+
+function printSummary(
+    results,
+    elapsedSeconds,
+    workerCount
+) {
+    const summary =
+        summarize(
+            results
+        );
+
+    console.log("");
+    console.log("============================================================");
+    console.log("SUMMARY");
+    console.log("============================================================");
+    console.log(
+        `Workers used: ${workerCount}`
+    );
+    console.log(
+        `Completed: ${summary.completed.toLocaleString()}`
+    );
+    console.log(
+        `Timeouts: ${summary.timeouts.toLocaleString()}`
+    );
+    console.log(
+        `Wall time: ${elapsedSeconds.toFixed(2)} sec`
+    );
+    console.log(
+        `Overall rate: ` +
+        `${(
+            results.length /
             Math.max(
                 elapsedSeconds,
                 0.001
-            );
-
-        process.stdout.write(
-            `\r${trial.toLocaleString()} / ` +
-            `${trials.toLocaleString()} ` +
-            `| ${rate.toFixed(1)} spins/sec`
-        );
-    }
-}
-
-console.log("");
-console.log("");
-
-
-const elapsedSeconds =
-    (
-        performance.now() -
-        started
-    ) /
-    1000;
-
-const summary =
-    summarize(
-        results
+            )
+        ).toFixed(1)} spins/sec`
     );
+    console.log(
+        `Average free revolutions: ` +
+        `${summary.averageRevolutions.toFixed(3)}`
+    );
+    console.log(
+        `Average simulated settle time: ` +
+        `${summary.averageSettleSeconds.toFixed(3)} sec`
+    );
+    console.log(
+        `Chi-square statistic: ` +
+        `${summary.chiSquare.toFixed(3)} ` +
+        `(36 df)`
+    );
+    console.log(
+        `Start->winner offset entropy: ` +
+        `${summary.offsetEntropy.toFixed(4)} / ` +
+        `${summary.maxEntropy.toFixed(4)} bits ` +
+        `(${summary.offsetEntropyPercent.toFixed(1)}%)`
+    );
+    console.log("");
 
 
-console.log("============================================================");
-console.log("SUMMARY");
-console.log("============================================================");
-console.log(
-    `Completed: ` +
-    `${summary.completed.toLocaleString()}`
-);
-console.log(
-    `Timeouts: ` +
-    `${summary.timeouts.toLocaleString()}`
-);
-console.log(
-    `Wall time: ` +
-    `${elapsedSeconds.toFixed(2)} sec`
-);
-console.log(
-    `Average free revolutions: ` +
-    `${summary.averageRevolutions.toFixed(3)}`
-);
-console.log(
-    `Average simulated settle time: ` +
-    `${summary.averageSettleSeconds.toFixed(3)} sec`
-);
-console.log(
-    `Chi-square statistic: ` +
-    `${summary.chiSquare.toFixed(3)} ` +
-    `(36 df)`
-);
-console.log(
-    `Start->winner offset entropy: ` +
-    `${summary.offsetEntropy.toFixed(4)} / ` +
-    `${summary.maxEntropy.toFixed(4)} bits ` +
-    `(${summary.offsetEntropyPercent.toFixed(1)}%)`
-);
-console.log("");
+    console.log("============================================================");
+    console.log("COLOR COUNTS");
+    console.log("============================================================");
 
-
-console.log("============================================================");
-console.log("COLOR COUNTS");
-console.log("============================================================");
-
-console.table([
-    {
-        color: "Red",
-        count: summary.red,
-        percent:
-            (
-                summary.red /
-                Math.max(
-                    summary.completed,
-                    1
-                ) *
-                100
-            ).toFixed(2)
-    },
-    {
-        color: "Black",
-        count: summary.black,
-        percent:
-            (
-                summary.black /
-                Math.max(
-                    summary.completed,
-                    1
-                ) *
-                100
-            ).toFixed(2)
-    },
-    {
-        color: "Green",
-        count: summary.green,
-        percent:
-            (
-                summary.green /
-                Math.max(
-                    summary.completed,
-                    1
-                ) *
-                100
-            ).toFixed(2)
-    }
-]);
-
-
-console.log("============================================================");
-console.log("NUMBER COUNTS");
-console.log("============================================================");
-
-console.table(
-    rouletteNumbers.map(
-        (number, index) => ({
-            number,
-            color:
-                getColor(number),
-            count:
-                summary.numberCounts[
-                    index
-                ],
+    console.table([
+        {
+            color: "Red",
+            count: summary.red,
             percent:
                 (
-                    summary.numberCounts[
-                        index
-                    ] /
+                    summary.red /
                     Math.max(
                         summary.completed,
                         1
                     ) *
                     100
-                ).toFixed(2),
-            expected:
-                summary.expectedPerNumber
-                    .toFixed(2)
-        })
-    )
-);
+                ).toFixed(2)
+        },
+        {
+            color: "Black",
+            count: summary.black,
+            percent:
+                (
+                    summary.black /
+                    Math.max(
+                        summary.completed,
+                        1
+                    ) *
+                    100
+                ).toFixed(2)
+        },
+        {
+            color: "Green",
+            count: summary.green,
+            percent:
+                (
+                    summary.green /
+                    Math.max(
+                        summary.completed,
+                        1
+                    ) *
+                    100
+                ).toFixed(2)
+        }
+    ]);
 
 
-console.log("============================================================");
-console.log("TOP START->WINNER OFFSETS");
-console.log("============================================================");
+    console.log("============================================================");
+    console.log("NUMBER COUNTS");
+    console.log("============================================================");
 
-console.log(
-    "If only one or two offsets dominate, the result may be " +
-    "predictable from the starting position even if raw number " +
-    "counts look uniform."
-);
+    console.table(
+        rouletteNumbers.map(
+            (
+                number,
+                index
+            ) => ({
+                number,
 
-console.table(
-    summary.offsetCounts
-        .map(
-            (count, offset) => ({
-                offset,
-                count,
+                color:
+                    getColor(
+                        number
+                    ),
+
+                count:
+                    summary.numberCounts[
+                        index
+                    ],
+
                 percent:
                     (
-                        count /
+                        summary.numberCounts[
+                            index
+                        ] /
                         Math.max(
                             summary.completed,
                             1
                         ) *
                         100
-                    ).toFixed(2)
+                    ).toFixed(2),
+
+                expected:
+                    summary.expectedPerNumber
+                        .toFixed(2)
             })
         )
-        .sort(
-            (a, b) =>
-                b.count - a.count
-        )
-        .slice(
-            0,
-            15
-        )
-);
-
-
-// ============================================================
-// WRITE RESULTS
-// ============================================================
-
-const outputDirectory =
-    path.resolve(
-        process.cwd(),
-        "simulation-results"
     );
 
-fs.mkdirSync(
-    outputDirectory,
-    {
-        recursive: true
-    }
-);
 
-const timestamp =
-    new Date()
-        .toISOString()
-        .replace(
-            /[:.]/g,
-            "-"
+    console.log("============================================================");
+    console.log("TOP START->WINNER OFFSETS");
+    console.log("============================================================");
+
+    console.log(
+        "If only one or two offsets dominate, the result may be " +
+        "predictable from the starting position even if raw number " +
+        "counts look uniform."
+    );
+
+    console.table(
+        summary.offsetCounts
+            .map(
+                (
+                    count,
+                    offset
+                ) => ({
+                    offset,
+
+                    count,
+
+                    percent:
+                        (
+                            count /
+                            Math.max(
+                                summary.completed,
+                                1
+                            ) *
+                            100
+                        ).toFixed(2)
+                })
+            )
+            .sort(
+                (
+                    a,
+                    b
+                ) =>
+                    b.count -
+                    a.count
+            )
+            .slice(
+                0,
+                15
+            )
+    );
+
+    return summary;
+}
+
+
+function writeResults(
+    results,
+    summary,
+    elapsedSeconds,
+    workerCount
+) {
+    const outputDirectory =
+        path.resolve(
+            process.cwd(),
+            "simulation-results"
         );
 
-const csvPath =
-    path.join(
+    fs.mkdirSync(
         outputDirectory,
-        `roulette_${trials}_spins_${timestamp}.csv`
-    );
-
-const jsonPath =
-    path.join(
-        outputDirectory,
-        `roulette_${trials}_summary_${timestamp}.json`
-    );
-
-fs.writeFileSync(
-    csvPath,
-    makeCsv(results),
-    "utf8"
-);
-
-fs.writeFileSync(
-    jsonPath,
-    JSON.stringify(
         {
-            trials,
+            recursive: true
+        }
+    );
+
+    const timestamp =
+        new Date()
+            .toISOString()
+            .replace(
+                /[:.]/g,
+                "-"
+            );
+
+    const csvPath =
+        path.join(
+            outputDirectory,
+            `roulette_${results.length}_spins_${timestamp}.csv`
+        );
+
+    const jsonPath =
+        path.join(
+            outputDirectory,
+            `roulette_${results.length}_summary_${timestamp}.json`
+        );
+
+    fs.writeFileSync(
+        csvPath,
+        makeCsv(
+            results
+        ),
+        "utf8"
+    );
+
+    fs.writeFileSync(
+        jsonPath,
+        JSON.stringify(
+            {
+                trials:
+                    results.length,
+
+                workerCount,
+
+                elapsedSeconds,
+
+                summary
+            },
+            null,
+            2
+        ),
+        "utf8"
+    );
+
+    console.log("");
+    console.log("============================================================");
+    console.log("FILES WRITTEN");
+    console.log("============================================================");
+    console.log(csvPath);
+    console.log(jsonPath);
+    console.log("");
+}
+
+
+async function runWorker() {
+    const {
+        startTrial,
+        count,
+        workerIndex
+    } =
+        workerData;
+
+    const {
+        world,
+        rotorBody
+    } =
+        createWorld();
+
+    const results = [];
+
+    const started =
+        performance.now();
+
+    let lastProgressTime =
+        started;
+
+
+    for (
+        let localIndex = 0;
+        localIndex < count;
+        localIndex++
+    ) {
+        const trial =
+            startTrial +
+            localIndex;
+
+        results.push(
+            simulateSpin(
+                world,
+                rotorBody,
+                trial
+            )
+        );
+
+        const now =
+            performance.now();
+
+        if (
+            localIndex ===
+                count - 1 ||
+            now -
+                lastProgressTime >=
+                1000
+        ) {
+            parentPort.postMessage({
+                type:
+                    "progress",
+
+                workerIndex,
+
+                completed:
+                    localIndex + 1,
+
+                total:
+                    count
+            });
+
+            lastProgressTime =
+                now;
+        }
+    }
+
+
+    const elapsedSeconds =
+        (
+            performance.now() -
+            started
+        ) /
+        1000;
+
+    world.free();
+
+    parentPort.postMessage({
+        type:
+            "done",
+
+        workerIndex,
+
+        elapsedSeconds,
+
+        results
+    });
+}
+
+
+async function runMain() {
+    const requestedTrials =
+        Number(
+            process.argv[2]
+        );
+
+    const trials =
+        Number.isFinite(
+            requestedTrials
+        ) &&
+        requestedTrials > 0
+            ? Math.floor(
+                requestedTrials
+            )
+            : 1000;
+
+
+    const available =
+        Math.max(
+            1,
+            getAvailableParallelism()
+        );
+
+    // Default to up to 8 workers, while leaving one logical CPU
+    // available for Windows / VS Code / OBS.
+    const defaultWorkers =
+        Math.max(
+            1,
+            Math.min(
+                8,
+                available - 1 || 1
+            )
+        );
+
+    const requestedWorkers =
+        Number(
+            process.argv[3]
+        );
+
+    const workerCount =
+        Math.max(
+            1,
+            Math.min(
+                trials,
+                Number.isFinite(
+                    requestedWorkers
+                ) &&
+                requestedWorkers > 0
+                    ? Math.floor(
+                        requestedWorkers
+                    )
+                    : defaultWorkers
+            )
+        );
+
+
+    console.log("");
+    console.log("============================================================");
+    console.log("ROULETTE MULTICORE BATCH PHYSICS TEST");
+    console.log("============================================================");
+    console.log(
+        `Trials: ${trials.toLocaleString()}`
+    );
+    console.log(
+        `Logical CPUs available: ${available}`
+    );
+    console.log(
+        `Worker threads: ${workerCount}`
+    );
+    console.log(
+        `Launch speed range: ` +
+        `${BALL_START_SPEED_MIN.toFixed(1)} - ` +
+        `${BALL_START_SPEED_MAX.toFixed(1)}`
+    );
+    console.log(
+        "Random start angle: 0° - 360°"
+    );
+    console.log(
+        `Launch direction jitter: ±${LAUNCH_DIRECTION_JITTER_DEGREES.toFixed(1)}°`
+    );
+    console.log(
+        `Initial rolling spin jitter: ±${(INITIAL_SPIN_JITTER_FRACTION * 100).toFixed(1)}%`
+    );
+    console.log(
+        `Physical rotor speed: ${ROTOR_ANGULAR_SPEED_MIN.toFixed(2)} - ${ROTOR_ANGULAR_SPEED_MAX.toFixed(2)} rad/s`
+    );
+    console.log(
+        "Rotor initial phase: random 0° - 360°"
+    );
+    console.log(
+        "Rendering: disabled"
+    );
+    console.log("");
+
+    if (
+        workerCount === 1
+    ) {
+        console.log(
+            "Note: using one worker. Pass a larger second number " +
+            "to the command to enable more parallelism."
+        );
+        console.log("");
+    }
+
+
+    const baseCount =
+        Math.floor(
+            trials /
+            workerCount
+        );
+
+    const remainder =
+        trials %
+        workerCount;
+
+    const progress =
+        new Array(
+            workerCount
+        )
+            .fill(
+                0
+            );
+
+    const totals =
+        new Array(
+            workerCount
+        )
+            .fill(
+                0
+            );
+
+    const workerResults =
+        new Array(
+            workerCount
+        );
+
+    let nextTrial = 1;
+
+    const workers = [];
+
+    const wallStart =
+        performance.now();
+
+
+    function printProgress() {
+        const completed =
+            progress.reduce(
+                (
+                    sum,
+                    value
+                ) =>
+                    sum +
+                    value,
+                0
+            );
+
+        const elapsedSeconds =
+            (
+                performance.now() -
+                wallStart
+            ) /
+            1000;
+
+        const rate =
+            completed /
+            Math.max(
+                elapsedSeconds,
+                0.001
+            );
+
+        const percent =
+            completed /
+            trials *
+            100;
+
+        process.stdout.write(
+            `\r${completed.toLocaleString()} / ` +
+            `${trials.toLocaleString()} ` +
+            `| ${percent.toFixed(1)}% ` +
+            `| ${rate.toFixed(1)} spins/sec`
+        );
+    }
+
+
+    for (
+        let workerIndex = 0;
+        workerIndex <
+            workerCount;
+        workerIndex++
+    ) {
+        const count =
+            baseCount +
+            (
+                workerIndex <
+                remainder
+                    ? 1
+                    : 0
+            );
+
+        totals[
+            workerIndex
+        ] =
+            count;
+
+        const startTrial =
+            nextTrial;
+
+        nextTrial +=
+            count;
+
+
+        workers.push(
+            new Promise(
+                (
+                    resolve,
+                    reject
+                ) => {
+                    const worker =
+                        new Worker(
+                            __filename,
+                            {
+                                workerData: {
+                                    startTrial,
+                                    count,
+                                    workerIndex
+                                }
+                            }
+                        );
+
+                    worker.on(
+                        "message",
+                        message => {
+                            if (
+                                message.type ===
+                                "progress"
+                            ) {
+                                progress[
+                                    message.workerIndex
+                                ] =
+                                    message.completed;
+
+                                printProgress();
+
+                            } else if (
+                                message.type ===
+                                "done"
+                            ) {
+                                progress[
+                                    message.workerIndex
+                                ] =
+                                    totals[
+                                        message.workerIndex
+                                    ];
+
+                                workerResults[
+                                    message.workerIndex
+                                ] =
+                                    message.results;
+
+                                printProgress();
+
+                                resolve();
+                            }
+                        }
+                    );
+
+                    worker.on(
+                        "error",
+                        reject
+                    );
+
+                    worker.on(
+                        "exit",
+                        code => {
+                            if (
+                                code !== 0
+                            ) {
+                                reject(
+                                    new Error(
+                                        `Worker ${workerIndex} exited with code ${code}`
+                                    )
+                                );
+                            }
+                        }
+                    );
+                }
+            )
+        );
+    }
+
+
+    await Promise.all(
+        workers
+    );
+
+    console.log("");
+    console.log("");
+
+
+    const elapsedSeconds =
+        (
+            performance.now() -
+            wallStart
+        ) /
+        1000;
+
+
+    const results =
+        workerResults
+            .flat()
+            .sort(
+                (
+                    a,
+                    b
+                ) =>
+                    a.trial -
+                    b.trial
+            );
+
+
+    const summary =
+        printSummary(
+            results,
             elapsedSeconds,
-            summary
-        },
-        null,
-        2
-    ),
-    "utf8"
-);
+            workerCount
+        );
 
 
-console.log("");
-console.log("============================================================");
-console.log("FILES WRITTEN");
-console.log("============================================================");
-console.log(csvPath);
-console.log(jsonPath);
-console.log("");
+    writeResults(
+        results,
+        summary,
+        elapsedSeconds,
+        workerCount
+    );
+}
 
-world.free();
 
+if (
+    isMainThread
+) {
+    await runMain();
+
+} else {
+    await runWorker();
+}
 
 })().catch(
     error => {
         console.error("");
         console.error(
-            "Roulette batch test failed:"
+            "Roulette multicore batch test failed:"
         );
         console.error(
             error
         );
+
         process.exitCode = 1;
     }
 );
