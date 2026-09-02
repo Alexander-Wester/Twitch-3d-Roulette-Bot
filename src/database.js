@@ -35,6 +35,32 @@ db.exec(`
 `);
 
 
+db.exec(`
+    CREATE TABLE IF NOT EXISTS roulette_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        round_id INTEGER NOT NULL,
+        twitch_user_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        winning_number INTEGER NOT NULL,
+        total_wagered INTEGER NOT NULL,
+        balance_change INTEGER NOT NULL,
+        balance_after INTEGER NOT NULL,
+        bet_details TEXT NOT NULL,
+        resolved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+        UNIQUE (round_id, twitch_user_id)
+    );
+`);
+
+db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_roulette_results_user
+    ON roulette_results (
+        twitch_user_id,
+        id DESC
+    );
+`);
+
+
 // ----------------------------------------------------
 // Get a user.
 //
@@ -164,10 +190,117 @@ function setBalance(userId, username, amount) {
 }
 
 
+// ----------------------------------------------------
+// Store one user's completed roulette-round result.
+//
+// One row is stored per user per round, even if that
+// user placed several bets during the same spin.
+// ----------------------------------------------------
+
+function saveRouletteResult({
+    roundId,
+    userId,
+    username,
+    winningNumber,
+    bets,
+    totalWagered,
+    balanceChange,
+    balanceAfter
+}) {
+    db.prepare(`
+        INSERT INTO roulette_results (
+            round_id,
+            twitch_user_id,
+            username,
+            winning_number,
+            total_wagered,
+            balance_change,
+            balance_after,
+            bet_details
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+
+        ON CONFLICT(round_id, twitch_user_id)
+        DO UPDATE SET
+            username = excluded.username,
+            winning_number = excluded.winning_number,
+            total_wagered = excluded.total_wagered,
+            balance_change = excluded.balance_change,
+            balance_after = excluded.balance_after,
+            bet_details = excluded.bet_details,
+            resolved_at = CURRENT_TIMESTAMP
+    `).run(
+        roundId,
+        userId,
+        username,
+        winningNumber,
+        totalWagered,
+        balanceChange,
+        balanceAfter,
+        JSON.stringify(bets)
+    );
+}
+
+
+// ----------------------------------------------------
+// Get a user's most recently completed roulette result
+// ----------------------------------------------------
+
+function getLastRouletteResult(userId) {
+    const row = db
+        .prepare(`
+            SELECT
+                round_id,
+                twitch_user_id,
+                username,
+                winning_number,
+                total_wagered,
+                balance_change,
+                balance_after,
+                bet_details,
+                resolved_at
+            FROM roulette_results
+            WHERE twitch_user_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+        `)
+        .get(userId);
+
+    if (!row) {
+        return null;
+    }
+
+    let bets = [];
+
+    try {
+        bets = JSON.parse(row.bet_details);
+    } catch (error) {
+        console.warn(
+            "Could not parse stored roulette bet details:",
+            error.message
+        );
+    }
+
+    return {
+        roundId: row.round_id,
+        userId: row.twitch_user_id,
+        username: row.username,
+        winningNumber: row.winning_number,
+        totalWagered: row.total_wagered,
+        balanceChange: row.balance_change,
+        balanceAfter: row.balance_after,
+        bets,
+        resolvedAt: row.resolved_at
+    };
+}
+
+
 module.exports = {
     getOrCreateUser,
     getBalance,
     changeBalance,
     setBalance,
+    saveRouletteResult,
+    getLastRouletteResult,
     STARTING_BALANCE
 };

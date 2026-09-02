@@ -1,9 +1,67 @@
 const {
     getBalance,
-    changeBalance
+    changeBalance,
+    saveRouletteResult
 } = require("./database");
 
-const BETTING_TIME_MS = 20000;
+const {
+    broadcastOverlayMessage
+} = require("./overlayServer");
+
+const {
+    getBettingClosedLine,
+    getBetAcceptedLine,
+    getResultRevealLine,
+    getGreenHitLine,
+    getStraightHitLine,
+    getHouseSweepLine,
+    getNobodyLostLine,
+    getResultPromptLine,
+    getUserResultLine,
+    getBiggestWinnerLine,
+    getBiggestLoserLine
+} = require("./rouletteLines");
+
+const BETTING_TIME_MIN_MS = 20000;
+const BETTING_TIME_MAX_MS = 22000;
+const BALL_RELEASE_DELAY_MS = 500;
+const RESULT_DISPLAY_MS = 4000;
+const COOLDOWN_TIME_MS = 5 * 60 * 1000;
+
+
+// ----------------------------------------------------
+// Chat result configuration
+//
+// Defaults to TRUE for smaller chats.
+// Set ANNOUNCE_ALL_RESULTS=false in .env for larger chats.
+// ----------------------------------------------------
+
+function readBooleanEnv(name, defaultValue) {
+    const rawValue = process.env[name];
+
+    if (
+        rawValue === undefined ||
+        rawValue === null ||
+        rawValue.trim() === ""
+    ) {
+        return defaultValue;
+    }
+
+    return ![
+        "false",
+        "0",
+        "no",
+        "off"
+    ].includes(
+        rawValue.trim().toLowerCase()
+    );
+}
+
+const ANNOUNCE_ALL_RESULTS =
+    readBooleanEnv(
+        "ANNOUNCE_ALL_RESULTS",
+        true
+    );
 
 const RED_NUMBERS = new Set([
     1, 3, 5, 7, 9,
@@ -14,6 +72,79 @@ const RED_NUMBERS = new Set([
 
 let activeRound = null;
 let nextRoundId = 1;
+let cooldownEndsAt = 0;
+let hideTableTimer = null;
+
+// Used only for a little continuity between rounds.
+// Nothing here is persisted; restarting the bot simply clears it.
+let previousRoundHighlights = {
+    biggestWinnerIds: new Set(),
+    biggestLoserIds: new Set()
+};
+
+
+// ----------------------------------------------------
+// Timing helpers
+// ----------------------------------------------------
+
+function randomBettingTimeMs() {
+    return (
+        BETTING_TIME_MIN_MS +
+        Math.floor(
+            Math.random() *
+            (
+                BETTING_TIME_MAX_MS -
+                BETTING_TIME_MIN_MS +
+                1
+            )
+        )
+    );
+}
+
+
+function getCooldownRemainingMs() {
+    return Math.max(
+        0,
+        cooldownEndsAt - Date.now()
+    );
+}
+
+
+function getRouletteState() {
+    if (activeRound) {
+        const effectiveStatus =
+            activeRound.status === "betting" &&
+            Date.now() >= activeRound.bettingEndsAt
+                ? "closed"
+                : activeRound.status;
+
+        return {
+            status: effectiveStatus,
+            roundId: activeRound.id,
+            bettingEndsAt: activeRound.bettingEndsAt,
+            cooldownRemainingMs: 0
+        };
+    }
+
+    const cooldownRemainingMs =
+        getCooldownRemainingMs();
+
+    if (cooldownRemainingMs > 0) {
+        return {
+            status: "cooldown",
+            roundId: null,
+            bettingEndsAt: null,
+            cooldownRemainingMs
+        };
+    }
+
+    return {
+        status: "idle",
+        roundId: null,
+        bettingEndsAt: null,
+        cooldownRemainingMs: 0
+    };
+}
 
 
 // ----------------------------------------------------
@@ -21,45 +152,101 @@ let nextRoundId = 1;
 // ----------------------------------------------------
 
 function createRound(sendChatMessage) {
+    const bettingDurationMs =
+        randomBettingTimeMs();
+
+    const startedAt = Date.now();
+
     const round = {
         id: nextRoundId++,
         status: "betting",
         bets: [],
-        startedAt: Date.now(),
-        closeTimer: null
+        startedAt,
+        bettingDurationMs,
+        bettingEndsAt:
+            startedAt + bettingDurationMs,
+        closeTimer: null,
+        launchTimer: null
     };
 
-    round.closeTimer = setTimeout(async () => {
-        if (
-            activeRound &&
-            activeRound.id === round.id &&
-            activeRound.status === "betting"
-        ) {
+    activeRound = round;
+
+    if (hideTableTimer) {
+        clearTimeout(hideTableTimer);
+        hideTableTimer = null;
+    }
+
+    console.log(
+        `Round #${round.id} started. ` +
+        `Betting is open for ` +
+        `${(bettingDurationMs / 1000).toFixed(2)} seconds.`
+    );
+
+    // The overlay, not Twitch chat, announces the opening.
+    // No extra personality text is added to the overlay.
+    broadcastOverlayMessage({
+        type: "roundStarted",
+        roundId: round.id,
+        bettingDurationMs,
+        bettingEndsAt: round.bettingEndsAt
+    });
+
+    round.closeTimer = setTimeout(
+        async () => {
+            if (
+                !activeRound ||
+                activeRound.id !== round.id ||
+                activeRound.status !== "betting"
+            ) {
+                return;
+            }
+
+            // This status change is the authoritative cutoff.
             activeRound.status = "closed";
 
             console.log(
                 `Round #${round.id}: betting is now closed.`
             );
 
+            broadcastOverlayMessage({
+                type: "bettingClosed",
+                roundId: round.id
+            });
+
+            // Start the release delay immediately. Twitch API latency
+            // must never change when the physical ball is sent.
+            round.launchTimer = setTimeout(
+                () => {
+                    if (
+                        !activeRound ||
+                        activeRound.id !== round.id ||
+                        activeRound.status !== "closed"
+                    ) {
+                        return;
+                    }
+
+                    activeRound.status = "spinning";
+
+                    console.log(
+                        `Round #${round.id}: releasing the ball.`
+                    );
+
+                    broadcastOverlayMessage({
+                        type: "launchBall",
+                        roundId: round.id
+                    });
+                },
+                BALL_RELEASE_DELAY_MS
+            );
+
             if (sendChatMessage) {
                 await sendChatMessage(
-                    `Betting is now closed for Round #${round.id}!`
+                    getBettingClosedLine()
                 );
             }
-        }
-    }, BETTING_TIME_MS);
-
-    activeRound = round;
-
-    console.log(
-        `Round #${round.id} started. Betting is open for ${BETTING_TIME_MS / 1000} seconds.`
+        },
+        bettingDurationMs
     );
-
-    if (sendChatMessage) {
-        sendChatMessage(
-            `Round #${round.id} has started! Betting is open for ${BETTING_TIME_MS / 1000} seconds.`
-        );
-    }
 
     return round;
 }
@@ -100,6 +287,89 @@ function getAvailableBalance(userId, username) {
 
 
 // ----------------------------------------------------
+// Personality context for an accepted bet.
+//
+// We deliberately produce at most ONE accepted-bet chat line,
+// so personality does not turn every round into chat spam.
+// ----------------------------------------------------
+
+function oppositeOf(result) {
+    if (result === "red") return "black";
+    if (result === "black") return "red";
+    if (result === "odd") return "even";
+    if (result === "even") return "odd";
+    return null;
+}
+
+
+function buildBetContext(
+    round,
+    userId,
+    username,
+    result,
+    amount,
+    availableBalanceBeforeBet
+) {
+    const existingUserBets =
+        round.bets.filter(
+            bet => bet.userId === userId
+        );
+
+    const sameResultCount =
+        round.bets.filter(
+            bet => bet.result === result
+        ).length;
+
+    const opposite =
+        oppositeOf(result);
+
+    const oppositeCount =
+        opposite
+            ? round.bets.filter(
+                bet => bet.result === opposite
+            ).length
+            : 0;
+
+    const wagerPercent =
+        availableBalanceBeforeBet > 0
+            ? (
+                amount /
+                availableBalanceBeforeBet
+            ) * 100
+            : 0;
+
+    return {
+        userId,
+        username,
+        result,
+        amount,
+        betCount:
+            existingUserBets.length + 1,
+        wagerPercent,
+        isAllIn:
+            amount ===
+            availableBalanceBeforeBet,
+        isConsensus:
+            Boolean(opposite) &&
+            sameResultCount >= 2 &&
+            sameResultCount > oppositeCount,
+        isContrarian:
+            Boolean(opposite) &&
+            oppositeCount >= 2 &&
+            sameResultCount === 0,
+        wasBiggestWinnerLastRound:
+            previousRoundHighlights
+                .biggestWinnerIds
+                .has(userId),
+        wasBiggestLoserLastRound:
+            previousRoundHighlights
+                .biggestLoserIds
+                .has(userId)
+    };
+}
+
+
+// ----------------------------------------------------
 // Place a bet
 // ----------------------------------------------------
 
@@ -110,15 +380,38 @@ function placeBet(
     amount,
     sendChatMessage
 ) {
-    // If a round exists but betting has closed,
-    // no more bets can be added.
+    const cooldownRemainingMs =
+        getCooldownRemainingMs();
+
+    if (
+        !activeRound &&
+        cooldownRemainingMs > 0
+    ) {
+        return {
+            success: false,
+            reason: "cooldown",
+            cooldownRemainingMs
+        };
+    }
+
+    if (
+        activeRound &&
+        activeRound.status === "betting" &&
+        Date.now() >= activeRound.bettingEndsAt
+    ) {
+        return {
+            success: false,
+            reason: "closed"
+        };
+    }
+
     if (
         activeRound &&
         activeRound.status !== "betting"
     ) {
         return {
             success: false,
-            reason: "betting_closed"
+            reason: activeRound.status
         };
     }
 
@@ -136,6 +429,16 @@ function placeBet(
     const round =
         activeRound || createRound(sendChatMessage);
 
+    const betContext =
+        buildBetContext(
+            round,
+            userId,
+            username,
+            result,
+            amount,
+            availableBalance
+        );
+
     round.bets.push({
         userId,
         username,
@@ -151,7 +454,11 @@ function placeBet(
         success: true,
         roundId: round.id,
         availableBalance:
-            availableBalance - amount
+            availableBalance - amount,
+        chatMessage:
+            getBetAcceptedLine(
+                betContext
+            )
     };
 }
 
@@ -161,7 +468,6 @@ function placeBet(
 // ----------------------------------------------------
 
 function betWins(betResult, winningNumber) {
-    // Straight number bet
     if (/^\d+$/.test(betResult)) {
         return Number(betResult) === winningNumber;
     }
@@ -171,7 +477,6 @@ function betWins(betResult, winningNumber) {
     }
 
     if (winningNumber === 0) {
-        // Zero loses all red/black/odd/even bets.
         return false;
     }
 
@@ -197,10 +502,6 @@ function betWins(betResult, winningNumber) {
 
 // ----------------------------------------------------
 // Profit multiplier
-//
-// Red/black/odd/even = 1:1
-// Exact number = 35:1
-// Green = 35:1 because our wheel has only one green 0.
 // ----------------------------------------------------
 
 function getProfitMultiplier(result) {
@@ -212,6 +513,89 @@ function getProfitMultiplier(result) {
     }
 
     return 1;
+}
+
+
+function getNumberColor(winningNumber) {
+    if (winningNumber === 0) {
+        return "GREEN";
+    }
+
+    if (RED_NUMBERS.has(winningNumber)) {
+        return "RED";
+    }
+
+    return "BLACK";
+}
+
+
+// ----------------------------------------------------
+// Group all bets from the same user into one round result
+// ----------------------------------------------------
+
+function summarizeResultsByUser(results) {
+    const byUser = new Map();
+
+    for (const result of results) {
+        let summary =
+            byUser.get(result.userId);
+
+        if (!summary) {
+            summary = {
+                userId: result.userId,
+                username: result.username,
+                bets: [],
+                totalWagered: 0,
+                balanceChange: 0,
+                newBalance: result.newBalance
+            };
+
+            byUser.set(
+                result.userId,
+                summary
+            );
+        }
+
+        summary.bets.push({
+            result: result.result,
+            amount: result.amount,
+            won: result.won,
+            balanceChange:
+                result.balanceChange
+        });
+
+        summary.totalWagered +=
+            result.amount;
+
+        summary.balanceChange +=
+            result.balanceChange;
+
+        summary.newBalance =
+            result.newBalance;
+
+        summary.username =
+            result.username;
+    }
+
+    return Array.from(
+        byUser.values()
+    );
+}
+
+
+function formatNameList(names) {
+    if (names.length === 1) {
+        return names[0];
+    }
+
+    if (names.length === 2) {
+        return `${names[0]} and ${names[1]}`;
+    }
+
+    return (
+        names.slice(0, -1).join(", ") +
+        `, and ${names[names.length - 1]}`
+    );
 }
 
 
@@ -243,6 +627,7 @@ function resolveRound(winningNumber) {
     }
 
     clearTimeout(activeRound.closeTimer);
+    clearTimeout(activeRound.launchTimer);
 
     const round = activeRound;
 
@@ -262,14 +647,9 @@ function resolveRound(winningNumber) {
             const multiplier =
                 getProfitMultiplier(bet.result);
 
-            // Stakes were only reserved, not actually
-            // removed from the database.
-            //
-            // Therefore we only add PROFIT here.
             balanceChange =
                 bet.amount * multiplier;
         } else {
-            // Losing stake is now actually removed.
             balanceChange =
                 -bet.amount;
         }
@@ -288,11 +668,96 @@ function resolveRound(winningNumber) {
         });
     }
 
+    const userSummaries =
+        summarizeResultsByUser(results);
+
+    for (const summary of userSummaries) {
+        saveRouletteResult({
+            roundId: round.id,
+            userId: summary.userId,
+            username: summary.username,
+            winningNumber,
+            bets: summary.bets,
+            totalWagered:
+                summary.totalWagered,
+            balanceChange:
+                summary.balanceChange,
+            balanceAfter:
+                summary.newBalance
+        });
+    }
+
+    // Remember only the previous round's biggest winner/loser IDs.
+    // This is used for next-round "revenge" / "hot hand" lines.
+    const positive =
+        userSummaries.filter(
+            summary =>
+                summary.balanceChange > 0
+        );
+
+    const negative =
+        userSummaries.filter(
+            summary =>
+                summary.balanceChange < 0
+        );
+
+    const biggestWin =
+        positive.length
+            ? Math.max(
+                ...positive.map(
+                    summary =>
+                        summary.balanceChange
+                )
+            )
+            : null;
+
+    const biggestLoss =
+        negative.length
+            ? Math.min(
+                ...negative.map(
+                    summary =>
+                        summary.balanceChange
+                )
+            )
+            : null;
+
+    previousRoundHighlights = {
+        biggestWinnerIds:
+            new Set(
+                positive
+                    .filter(
+                        summary =>
+                            summary.balanceChange ===
+                            biggestWin
+                    )
+                    .map(
+                        summary =>
+                            summary.userId
+                    )
+            ),
+        biggestLoserIds:
+            new Set(
+                negative
+                    .filter(
+                        summary =>
+                            summary.balanceChange ===
+                            biggestLoss
+                    )
+                    .map(
+                        summary =>
+                            summary.userId
+                    )
+            )
+    };
+
     round.status = "resolved";
 
     console.log(
         `Round #${round.id} resolved: ${winningNumber}`
     );
+
+    cooldownEndsAt =
+        Date.now() + COOLDOWN_TIME_MS;
 
     activeRound = null;
 
@@ -300,10 +765,373 @@ function resolveRound(winningNumber) {
         success: true,
         roundId: round.id,
         winningNumber,
-        results
+        results,
+        userSummaries,
+        cooldownEndsAt
     };
 }
 
+
+// ----------------------------------------------------
+// Announce a resolved result in Twitch chat
+// ----------------------------------------------------
+
+async function announceResolvedRound(
+    resolved,
+    sendChatMessage
+) {
+    if (!sendChatMessage) {
+        return;
+    }
+
+    const color =
+        getNumberColor(
+            resolved.winningNumber
+        );
+
+    // Winning pocket appears exactly once in the
+    // automatic post-spin chat messages.
+    await sendChatMessage(
+        getResultRevealLine(
+            color,
+            resolved.winningNumber
+        )
+    );
+
+    const summaries =
+        resolved.userSummaries ||
+        summarizeResultsByUser(
+            resolved.results
+        );
+
+    const winningSummaries =
+        summaries.filter(
+            summary =>
+                summary.balanceChange > 0
+        );
+
+    const losingSummaries =
+        summaries.filter(
+            summary =>
+                summary.balanceChange < 0
+        );
+
+    const biggestWin =
+        winningSummaries.length > 0
+            ? Math.max(
+                ...winningSummaries.map(
+                    summary =>
+                        summary.balanceChange
+                )
+            )
+            : null;
+
+    const biggestLoss =
+        losingSummaries.length > 0
+            ? Math.min(
+                ...losingSummaries.map(
+                    summary =>
+                        summary.balanceChange
+                )
+            )
+            : null;
+
+    const biggestWinnerIds =
+        new Set(
+            winningSummaries
+                .filter(
+                    summary =>
+                        summary.balanceChange ===
+                        biggestWin
+                )
+                .map(
+                    summary => summary.userId
+                )
+        );
+
+    const biggestLoserIds =
+        new Set(
+            losingSummaries
+                .filter(
+                    summary =>
+                        summary.balanceChange ===
+                        biggestLoss
+                )
+                .map(
+                    summary => summary.userId
+                )
+        );
+
+
+    // ------------------------------------------------
+    // Long-shot callouts.
+    // ------------------------------------------------
+
+    const greenHitters =
+        new Set();
+
+    const straightUpHitters =
+        new Set();
+
+    for (const result of resolved.results) {
+        if (!result.won) {
+            continue;
+        }
+
+        if (result.result === "green") {
+            greenHitters.add(
+                result.username
+            );
+        }
+
+        if (/^\d+$/.test(result.result)) {
+            straightUpHitters.add(
+                result.username
+            );
+        }
+    }
+
+    if (greenHitters.size > 0) {
+        const names =
+            formatNameList(
+                Array.from(greenHitters)
+            );
+
+        await sendChatMessage(
+            getGreenHitLine(names)
+        );
+    }
+
+    if (straightUpHitters.size > 0) {
+        const names =
+            formatNameList(
+                Array.from(
+                    straightUpHitters
+                )
+            );
+
+        await sendChatMessage(
+            getStraightHitLine(names)
+        );
+    }
+
+
+    // ------------------------------------------------
+    // Small-chat mode:
+    // announce every user's NET result exactly once.
+    // ------------------------------------------------
+
+    if (ANNOUNCE_ALL_RESULTS) {
+        for (const summary of summaries) {
+            await sendChatMessage(
+                getUserResultLine(
+                    summary,
+                    {
+                        isBiggestWinner:
+                            biggestWinnerIds.has(
+                                summary.userId
+                            ),
+                        isBiggestLoser:
+                            biggestLoserIds.has(
+                                summary.userId
+                            )
+                    }
+                )
+            );
+        }
+
+        return;
+    }
+
+
+    // ------------------------------------------------
+    // Large-chat mode:
+    // only announce biggest winner(s) / biggest loss(es).
+    // ------------------------------------------------
+
+    if (biggestWin !== null) {
+        const biggestWinners =
+            winningSummaries.filter(
+                summary =>
+                    summary.balanceChange ===
+                    biggestWin
+            );
+
+        const names =
+            formatNameList(
+                biggestWinners.map(
+                    summary =>
+                        summary.username
+                )
+            );
+
+        await sendChatMessage(
+            getBiggestWinnerLine(
+                names,
+                biggestWin,
+                biggestWinners.length
+            )
+        );
+    } else {
+        await sendChatMessage(
+            getHouseSweepLine()
+        );
+    }
+
+    if (biggestLoss !== null) {
+        const biggestLosers =
+            losingSummaries.filter(
+                summary =>
+                    summary.balanceChange ===
+                    biggestLoss
+            );
+
+        const names =
+            formatNameList(
+                biggestLosers.map(
+                    summary =>
+                        summary.username
+                )
+            );
+
+        await sendChatMessage(
+            getBiggestLoserLine(
+                names,
+                biggestLoss,
+                biggestLosers.length
+            )
+        );
+    } else {
+        await sendChatMessage(
+            getNobodyLostLine()
+        );
+    }
+
+    await sendChatMessage(
+        getResultPromptLine()
+    );
+}
+
+
+// ----------------------------------------------------
+// Messages sent BACK from the roulette browser source
+// ----------------------------------------------------
+
+async function handleOverlayMessage(
+    data,
+    sendChatMessage
+) {
+    if (
+        !data ||
+        data.type !== "rouletteResult"
+    ) {
+        return;
+    }
+
+    const roundId = Number(data.roundId);
+    const winningNumber = Number(data.winningNumber);
+
+    if (
+        !Number.isInteger(roundId) ||
+        !Number.isInteger(winningNumber) ||
+        winningNumber < 0 ||
+        winningNumber > 36
+    ) {
+        console.warn(
+            "Ignoring invalid roulette result from overlay:",
+            data
+        );
+
+        return;
+    }
+
+    if (
+        !activeRound ||
+        activeRound.id !== roundId ||
+        activeRound.status !== "spinning"
+    ) {
+        console.warn(
+            `Ignoring stale roulette result for Round #${roundId}.`
+        );
+
+        return;
+    }
+
+    const resolved =
+        resolveRound(winningNumber);
+
+    if (!resolved.success) {
+        return;
+    }
+
+    broadcastOverlayMessage({
+        type: "roundResolved",
+        roundId: resolved.roundId,
+        winningNumber: resolved.winningNumber,
+        cooldownEndsAt: resolved.cooldownEndsAt
+    });
+
+    await announceResolvedRound(
+        resolved,
+        sendChatMessage
+    );
+
+    hideTableTimer = setTimeout(
+        () => {
+            broadcastOverlayMessage({
+                type: "hideTable",
+                roundId: resolved.roundId
+            });
+
+            hideTableTimer = null;
+        },
+        RESULT_DISPLAY_MS
+    );
+}
+
+
+// ----------------------------------------------------
+// State replay for a freshly connected/reconnected overlay
+// ----------------------------------------------------
+
+function getOverlayStateMessages() {
+    if (!activeRound) {
+        return [];
+    }
+
+    const messages = [
+        {
+            type: "roundStarted",
+            roundId: activeRound.id,
+            bettingDurationMs:
+                activeRound.bettingDurationMs,
+            bettingEndsAt:
+                activeRound.bettingEndsAt
+        }
+    ];
+
+    const effectiveClosed =
+        activeRound.status !== "betting" ||
+        Date.now() >= activeRound.bettingEndsAt;
+
+    if (effectiveClosed) {
+        messages.push({
+            type: "bettingClosed",
+            roundId: activeRound.id
+        });
+    }
+
+    if (
+        activeRound.status === "spinning"
+    ) {
+        messages.push({
+            type: "launchBall",
+            roundId: activeRound.id
+        });
+    }
+
+    return messages;
+}
 
 function getActiveRound() {
     return activeRound;
@@ -313,7 +1141,14 @@ function getActiveRound() {
 module.exports = {
     placeBet,
     resolveRound,
+    announceResolvedRound,
+    handleOverlayMessage,
     getReservedAmount,
     getAvailableBalance,
-    getActiveRound
+    getActiveRound,
+    getCooldownRemainingMs,
+    getRouletteState,
+    getOverlayStateMessages,
+    COOLDOWN_TIME_MS,
+    ANNOUNCE_ALL_RESULTS
 };

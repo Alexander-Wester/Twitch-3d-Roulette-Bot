@@ -6,7 +6,8 @@ const CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const SCOPES = [
     "user:read:chat",
     "user:write:chat",
-    "user:bot"
+    "user:bot",
+    "moderator:read:chatters"
 ];
 
 async function startDeviceAuthorization() {

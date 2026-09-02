@@ -321,6 +321,19 @@ const wss = new WebSocketServer({
     server
 });
 
+let overlayMessageHandler = null;
+let overlayStateProvider = null;
+
+
+function setOverlayMessageHandler(handler) {
+    overlayMessageHandler = handler;
+}
+
+
+function setOverlayStateProvider(provider) {
+    overlayStateProvider = provider;
+}
+
 
 wss.on(
     "connection",
@@ -335,6 +348,57 @@ wss.on(
             JSON.stringify({
                 type: "connected"
             })
+        );
+
+
+        // Replaying the current round state makes an OBS/browser
+        // reconnect recover instead of silently missing a countdown
+        // close or ball-launch message.
+        if (overlayStateProvider) {
+            try {
+                const replayMessages =
+                    overlayStateProvider() || [];
+
+                for (const replayMessage of replayMessages) {
+                    socket.send(
+                        JSON.stringify(
+                            replayMessage
+                        )
+                    );
+                }
+            } catch (error) {
+                console.error(
+                    "Could not replay overlay state:",
+                    error
+                );
+            }
+        }
+
+
+        // The browser source sends the final PHYSICAL pocket
+        // result back through this same WebSocket. The Twitch bot
+        // registers the authoritative handler at startup.
+        socket.on(
+            "message",
+            async rawData => {
+                try {
+                    const data = JSON.parse(
+                        rawData.toString()
+                    );
+
+                    if (overlayMessageHandler) {
+                        await overlayMessageHandler(
+                            data,
+                            socket
+                        );
+                    }
+                } catch (error) {
+                    console.error(
+                        "Overlay message error:",
+                        error
+                    );
+                }
+            }
         );
 
 
@@ -397,5 +461,7 @@ function broadcastOverlayMessage(data) {
 
 module.exports = {
     startOverlayServer,
-    broadcastOverlayMessage
+    broadcastOverlayMessage,
+    setOverlayMessageHandler,
+    setOverlayStateProvider
 };

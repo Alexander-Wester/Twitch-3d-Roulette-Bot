@@ -8,13 +8,22 @@ const NAMED_RESULTS = new Set([
     "green"
 ]);
 
-const { getBalance } = require("./database");
+const {
+    getBalance,
+    getLastRouletteResult
+} = require("./database");
+
+const {
+    getRandomCooldownLine
+} = require("./cooldownLines");
 
 const {
     placeBet,
     resolveRound,
+    announceResolvedRound,
     getReservedAmount,
-    getAvailableBalance
+    getAvailableBalance,
+    getRouletteState
 } = require("./roundManager");
 
 
@@ -39,12 +48,10 @@ function gambleGuide() {
 function validResult(result) {
     result = result.toLowerCase();
 
-    // Named bets
     if (NAMED_RESULTS.has(result)) {
         return true;
     }
 
-    // Exact number from 0 through 36
     if (/^\d+$/.test(result)) {
         const number = Number(result);
 
@@ -52,6 +59,111 @@ function validResult(result) {
     }
 
     return false;
+}
+
+
+// ----------------------------------------------------
+// Friendly cooldown timer
+// ----------------------------------------------------
+
+function formatRemainingTime(milliseconds) {
+    const totalSeconds = Math.max(
+        0,
+        Math.ceil(milliseconds / 1000)
+    );
+
+    const minutes = Math.floor(
+        totalSeconds / 60
+    );
+
+    const seconds =
+        totalSeconds % 60;
+
+    return (
+        `${minutes}:` +
+        String(seconds).padStart(2, "0")
+    );
+}
+
+
+// ----------------------------------------------------
+// Random cooldown response
+// ----------------------------------------------------
+
+function cooldownResponse(username, milliseconds) {
+    const line = getRandomCooldownLine();
+    const remainingTime = formatRemainingTime(milliseconds);
+
+    return (
+        `@${username} ${line}\n` +
+        `(wheel on cooldown — ${remainingTime} remaining)`
+    );
+}
+
+
+// ----------------------------------------------------
+// Last roulette result formatting
+// ----------------------------------------------------
+
+function formatSignedAmount(amount) {
+    if (amount > 0) {
+        return `+${amount.toLocaleString()}`;
+    }
+
+    if (amount < 0) {
+        return `-${Math.abs(amount).toLocaleString()}`;
+    }
+
+    return "0";
+}
+
+
+function lastResultResponse(username, lastResult) {
+    if (!lastResult) {
+        return (
+            `@${username} You don't have a roulette result yet. ` +
+            `Place a bet with !gamble first.`
+        );
+    }
+
+    const bets = Array.isArray(lastResult.bets)
+        ? lastResult.bets
+        : [];
+
+    if (bets.length === 1) {
+        const bet = bets[0];
+
+        return (
+            `@${username} You bet ${bet.amount.toLocaleString()} on ${bet.result} ` +
+            `and ${bet.won ? "WON" : "LOST"} ` +
+            `${formatSignedAmount(bet.balanceChange)} chips. ` +
+            `Balance: ${lastResult.balanceAfter.toLocaleString()}.`
+        );
+    }
+
+    const wonBets = bets.filter(bet => bet.won);
+    const lostBets = bets.filter(bet => !bet.won);
+
+    const pieces = [];
+
+    if (wonBets.length > 0) {
+        pieces.push(
+            `won ${wonBets.length} bet${wonBets.length === 1 ? "" : "s"}`
+        );
+    }
+
+    if (lostBets.length > 0) {
+        pieces.push(
+            `lost ${lostBets.length} bet${lostBets.length === 1 ? "" : "s"}`
+        );
+    }
+
+    return (
+        `@${username} Last round: ${bets.length} bets, ` +
+        `${pieces.join(" and ")}. ` +
+        `Net: ${formatSignedAmount(lastResult.balanceChange)} chips. ` +
+        `Balance: ${lastResult.balanceAfter.toLocaleString()}.`
+    );
 }
 
 
@@ -64,17 +176,7 @@ async function handleCommand(event, sendChatMessage) {
     const userId = event.chatter_user_id;
 
     const fullMessage = event.message.text.trim();
-
-    // Example:
-    //
-    // !gamble red 250
-    //
-    // becomes:
-    //
-    // ["!gamble", "red", "250"]
-
     const parts = fullMessage.split(/\s+/);
-
     const command = parts[0].toLowerCase();
 
 
@@ -112,18 +214,61 @@ async function handleCommand(event, sendChatMessage) {
 
 
     // ====================================================
+    // !result / !lastbet
+    // ====================================================
+
+    if (
+        command === "!result" ||
+        command === "!lastbet"
+    ) {
+        const lastResult =
+            getLastRouletteResult(userId);
+
+        await sendChatMessage(
+            lastResultResponse(
+                username,
+                lastResult
+            )
+        );
+
+        return;
+    }
+
+
+    // ====================================================
     // !gamble
     // ====================================================
 
     if (command === "!gamble") {
+        const rouletteState =
+            getRouletteState();
 
-        // We expect exactly:
-        //
-        // !gamble <result> <amount>
-        //
-        // Example:
-        //
-        // !gamble red 500
+        if (
+            rouletteState.status ===
+            "cooldown"
+        ) {
+            await sendChatMessage(
+                cooldownResponse(
+                    username,
+                    rouletteState.cooldownRemainingMs
+                )
+            );
+
+            return;
+        }
+
+        if (
+            rouletteState.status === "closed" ||
+            rouletteState.status === "spinning" ||
+            rouletteState.status === "resolving"
+        ) {
+            await sendChatMessage(
+                `@${username} The wheel is already spinning — ` +
+                `wait for the result!`
+            );
+
+            return;
+        }
 
         if (parts.length !== 3) {
             await sendChatMessage(
@@ -133,29 +278,14 @@ async function handleCommand(event, sendChatMessage) {
             return;
         }
 
-
-        // ------------------------------------------------
-        // Read command variables
-        // ------------------------------------------------
-
         const result =
             parts[1].toLowerCase();
-
-        // Allows:
-        //
-        // 1000
-        // 1,000
 
         const amountText =
             parts[2].replace(/,/g, "");
 
         const betAmount =
             Number(amountText);
-
-
-        // ------------------------------------------------
-        // Validate roulette result
-        // ------------------------------------------------
 
         if (!validResult(result)) {
             await sendChatMessage(
@@ -164,11 +294,6 @@ async function handleCommand(event, sendChatMessage) {
 
             return;
         }
-
-
-        // ------------------------------------------------
-        // Validate bet amount
-        // ------------------------------------------------
 
         if (
             !Number.isFinite(betAmount) ||
@@ -182,7 +307,6 @@ async function handleCommand(event, sendChatMessage) {
             return;
         }
 
-
         if (betAmount < MIN_BET) {
             await sendChatMessage(
                 `${username}, the minimum bet is ` +
@@ -192,16 +316,11 @@ async function handleCommand(event, sendChatMessage) {
             return;
         }
 
-
-        // This accounts for money the user has already
-        // wagered during the current round.
-
         const availableBalance =
             getAvailableBalance(
                 userId,
                 username
             );
-
 
         if (betAmount > availableBalance) {
             await sendChatMessage(
@@ -213,11 +332,6 @@ async function handleCommand(event, sendChatMessage) {
             return;
         }
 
-
-        // ------------------------------------------------
-        // Actually place the bet
-        // ------------------------------------------------
-
         const bet = placeBet(
             userId,
             username,
@@ -226,21 +340,36 @@ async function handleCommand(event, sendChatMessage) {
             sendChatMessage
         );
 
-
-        // Round exists, but its betting window closed.
         if (
             !bet.success &&
-            bet.reason === "betting_closed"
+            bet.reason === "cooldown"
         ) {
             await sendChatMessage(
-                `${username}, betting for the current round is closed.`
+                cooldownResponse(
+                    username,
+                    bet.cooldownRemainingMs
+                )
             );
 
             return;
         }
 
+        if (
+            !bet.success &&
+            (
+                bet.reason === "closed" ||
+                bet.reason === "spinning" ||
+                bet.reason === "resolving"
+            )
+        ) {
+            await sendChatMessage(
+                `@${username} The wheel is already spinning — ` +
+                `wait for the result!`
+            );
 
-        // Extra safety check.
+            return;
+        }
+
         if (
             !bet.success &&
             bet.reason === "insufficient_balance"
@@ -254,8 +383,6 @@ async function handleCommand(event, sendChatMessage) {
             return;
         }
 
-
-        // Catch anything unexpected.
         if (!bet.success) {
             await sendChatMessage(
                 `${username}, your bet could not be accepted.`
@@ -264,14 +391,15 @@ async function handleCommand(event, sendChatMessage) {
             return;
         }
 
-
-        // ------------------------------------------------
-        // Successful bet
-        // ------------------------------------------------
-
+        // roundManager now chooses ONE context-aware personality line.
+        // This replaces the old fixed "Bet Accepted!" line rather than
+        // adding another message and cluttering chat.
         await sendChatMessage(
-            `Bet Accepted! ${username} places a bet of ` +
-            `${betAmount.toLocaleString()} chips on ${result}.`
+            bet.chatMessage ||
+            (
+                `Bet Accepted! ${username} places a bet of ` +
+                `${betAmount.toLocaleString()} chips on ${result}.`
+            )
         );
 
         return;
@@ -281,17 +409,11 @@ async function handleCommand(event, sendChatMessage) {
     // ====================================================
     // !resolve
     //
-    // TEMPORARY development command.
-    //
-    // Eventually the 3D roulette wheel will call
-    // resolveRound() instead.
+    // TEMPORARY streamer-only development / emergency command.
+    // Normal rounds now resolve automatically from the 3D wheel.
     // ====================================================
 
     if (command === "!resolve") {
-
-        // Only allow the streamer whose channel is
-        // configured in .env to resolve the wheel.
-
         const channelLogin =
             process.env.TWITCH_CHANNEL
                 ?.toLowerCase();
@@ -300,15 +422,9 @@ async function handleCommand(event, sendChatMessage) {
             event.chatter_user_login
                 ?.toLowerCase();
 
-
         if (chatterLogin !== channelLogin) {
             return;
         }
-
-
-        // Expected:
-        //
-        // !resolve 17
 
         if (parts.length !== 2) {
             await sendChatMessage(
@@ -318,10 +434,8 @@ async function handleCommand(event, sendChatMessage) {
             return;
         }
 
-
         const winningNumber =
             Number(parts[1]);
-
 
         if (
             !Number.isInteger(winningNumber) ||
@@ -335,14 +449,8 @@ async function handleCommand(event, sendChatMessage) {
             return;
         }
 
-
-        // ------------------------------------------------
-        // Settle the round
-        // ------------------------------------------------
-
         const resolved =
             resolveRound(winningNumber);
-
 
         if (!resolved.success) {
             await sendChatMessage(
@@ -352,36 +460,10 @@ async function handleCommand(event, sendChatMessage) {
             return;
         }
 
-
-        await sendChatMessage(
-            `Roulette result: ${winningNumber}!`
+        await announceResolvedRound(
+            resolved,
+            sendChatMessage
         );
-
-
-        // Find winning bets.
-        const winners =
-            resolved.results.filter(
-                result => result.won
-            );
-
-
-        if (winners.length === 0) {
-            await sendChatMessage(
-                "No winning bets this round."
-            );
-
-            return;
-        }
-
-
-        // Announce each winner.
-        for (const winner of winners) {
-            await sendChatMessage(
-                `${winner.username} wins ` +
-                `${winner.balanceChange.toLocaleString()} chips! ` +
-                `New balance: ${winner.newBalance.toLocaleString()}.`
-            );
-        }
 
         return;
     }

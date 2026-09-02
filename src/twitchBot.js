@@ -5,8 +5,26 @@ const WebSocket = require("ws");
 const { handleCommand } = require("./commands");
 
 const {
-    startOverlayServer
+    startPassiveIncome
+} = require("./passiveIncome");
+
+const {
+    startIdleGambleReminder,
+    resetIdleGambleReminder
+} = require("./idleGambleReminder");
+
+const {
+    startOverlayServer,
+    setOverlayMessageHandler,
+    setOverlayStateProvider
 } = require("./overlayServer");
+
+const {
+    handleOverlayMessage,
+    getOverlayStateMessages,
+    getRouletteState,
+    ANNOUNCE_ALL_RESULTS
+} = require("./roundManager");
 
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const CHANNEL_LOGIN = process.env.TWITCH_CHANNEL;
@@ -222,10 +240,31 @@ async function handleChatMessage(event) {
         return;
     }
 
+    // Remember whether a roulette round existed before
+    // this chat command was processed.
+    const stateBefore =
+        getRouletteState();
+
     await handleCommand(
         event,
         sendChatMessage
     );
+
+    const stateAfter =
+        getRouletteState();
+
+    // The first accepted !gamble changes the wheel from
+    // idle -> betting. That is the one moment we use to
+    // restart the 20-minute idle reminder timer.
+    //
+    // Extra bets during the same round do NOT reset it.
+    // Failed/cooldown !gamble attempts do NOT reset it.
+    if (
+        stateBefore.status === "idle" &&
+        stateAfter.status === "betting"
+    ) {
+        resetIdleGambleReminder();
+    }
 }
 
 
@@ -387,6 +426,11 @@ function connectWebSocketTo(url) {
 async function start() {
     console.log("\n========================================");
     console.log("RHINO'S ROULETTE BOT");
+    console.log("========================================");
+    console.log(
+        `Announce all roulette results: ` +
+        `${ANNOUNCE_ALL_RESULTS ? "ON" : "OFF"}`
+    );
     console.log("========================================\n");
 
     if (!CLIENT_ID) {
@@ -401,13 +445,45 @@ async function start() {
         );
     }
 
-    // Start the local OBS / Streamlabs overlay server
+    // Route physical roulette results from the OBS/browser
+    // source back into the authoritative round manager.
+    setOverlayMessageHandler(
+        data => handleOverlayMessage(
+            data,
+            sendChatMessage
+        )
+    );
+
+    setOverlayStateProvider(
+        getOverlayStateMessages
+    );
+
+    // Start the local OBS overlay server.
     startOverlayServer();
 
     loadToken();
 
     await getBotAccount();
     await getBroadcasterAccount();
+
+    // Award passive currency to everyone currently connected
+    // to Twitch chat once every five minutes.
+    startPassiveIncome({
+        accessToken,
+        clientId: CLIENT_ID,
+        broadcasterUserId,
+        botUserId
+    });
+
+    // If nobody starts a roulette round for 20 minutes,
+    // post one random degenerate-gambler reminder in chat.
+    // It continues every 20 idle minutes until a new round
+    // starts, at which point the countdown resets.
+    startIdleGambleReminder({
+        sendChatMessage,
+        isRouletteIdle: () =>
+            getRouletteState().status === "idle"
+    });
 
     connectWebSocket();
 }

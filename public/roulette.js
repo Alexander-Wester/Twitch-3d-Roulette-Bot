@@ -57,40 +57,13 @@ const FIXED_TIME_STEP = 1 / 240;
 
 const BALL_RADIUS = 0.14;
 
-// Randomized once each time this roulette simulation starts.
+// Randomized independently for every ball release.
 const BALL_START_SPEED_MIN = 11.5;
 const BALL_START_SPEED_MAX = 12.5;
 
-const BALL_START_SPEED =
-    BALL_START_SPEED_MIN +
-    Math.random() *
-    (
-        BALL_START_SPEED_MAX -
-        BALL_START_SPEED_MIN
-    );
-
-// Small physical launch imperfections.
+// Small physical launch imperfections, also randomized per spin.
 const LAUNCH_DIRECTION_JITTER_DEGREES = 1.5;
 const INITIAL_SPIN_JITTER_FRACTION = 0.05;
-
-const LAUNCH_DIRECTION_JITTER_RADIANS =
-    (
-        Math.random() *
-        2 -
-        1
-    ) *
-    LAUNCH_DIRECTION_JITTER_DEGREES *
-    Math.PI /
-    180;
-
-const INITIAL_SPIN_MULTIPLIER =
-    1 +
-    (
-        Math.random() *
-        2 -
-        1
-    ) *
-    INITIAL_SPIN_JITTER_FRACTION;
 
 // Overall roulette dimensions.
 const TABLE_RADIUS = 5.55;
@@ -2445,41 +2418,25 @@ scene.add(
 
 
 // ============================================================
-// BALL PHYSICS
+// BALL PHYSICS + ROUND LIFECYCLE
 // ============================================================
 //
-// Dynamic from frame zero.
-// After launch there are NO later setTranslation() calls and
-// NO later setLinvel() calls.
-// ============================================================
-
-// Random starting point around the SAME radial launch ring.
+// The wheel/rotor is allowed to spin continuously while the OBS
+// source is loaded. The ball, however, is NOT launched on page load.
+// It is released only after the bot sends the launchBall message.
 //
-// We intentionally randomize the angle, not the radial depth.
-// The launch ring is already tuned to the bowl shape and the
-// 11.5-12.5 speed range. Randomizing radius would also change
-// the bank slope and could produce very different launch physics.
-const START_ANGLE =
-    Math.random() *
-    Math.PI *
-    2;
-
-// getBallCenterAtContact() offsets the sphere center along the
-// local bowl normal. This keeps the ball exactly BALL_RADIUS away
-// from the physical bowl surface regardless of START_ANGLE.
-const start =
-    getBallCenterAtContact(
-        BALL_START_CONTACT_RADIUS,
-        START_ANGLE
-    );
+// Between rounds we reuse the same Rapier rigid body. Resetting its
+// position/velocity is only done BEFORE a new spin begins; once the
+// ball is released, Rapier owns its motion completely until settle.
+// ============================================================
 
 const ballBodyDescription =
     RAPIER.RigidBodyDesc
         .dynamic()
         .setTranslation(
-            start.x,
-            start.y,
-            start.z
+            0,
+            -100,
+            0
         )
         .setLinearDamping(
             ROLLING_DRAG
@@ -2514,112 +2471,23 @@ ballBody.enableCcd(
     true
 );
 
-
-// ============================================================
-// RANDOMIZED TANGENTIAL LAUNCH
-// ============================================================
-//
-// Bowl position around the launch ring is:
-//
-//     x = cos(angle) * radius
-//     z = sin(angle) * radius
-//
-// The +angle tangent is therefore:
-//
-//     x = -sin(angle)
-//     z =  cos(angle)
-//
-// Multiplying that unit tangent by BALL_START_SPEED gives the
-// correct horizontal launch vector from ANY random start point.
-// ============================================================
-
-const launchDirectionAngle =
-    START_ANGLE +
-    Math.PI / 2 +
-    LAUNCH_DIRECTION_JITTER_RADIANS;
-
-const launchVelocity = {
-    x:
-        Math.cos(
-            launchDirectionAngle
-        ) *
-        BALL_START_SPEED,
-
-    y: 0,
-
-    z:
-        Math.sin(
-            launchDirectionAngle
-        ) *
-        BALL_START_SPEED
-};
-
-ballBody.setLinvel(
-    launchVelocity,
-    true
-);
-
-
-// ============================================================
-// MATCHING INITIAL ROLLING SPIN
-// ============================================================
-
-const startNormal =
-    new THREE.Vector3(
-        start.normal.x,
-        start.normal.y,
-        start.normal.z
-    );
-
-const startVelocity =
-    new THREE.Vector3(
-        launchVelocity.x,
-        launchVelocity.y,
-        launchVelocity.z
-    );
-
-const startAngularVelocity =
-    new THREE.Vector3()
-        .crossVectors(
-            startNormal,
-            startVelocity
-        )
-        .divideScalar(
-            BALL_RADIUS
-        )
-        .multiplyScalar(
-            INITIAL_SPIN_MULTIPLIER
-        );
-
-ballBody.setAngvel(
-    {
-        x:
-            startAngularVelocity.x,
-
-        y:
-            startAngularVelocity.y,
-
-        z:
-            startAngularVelocity.z
-    },
-    true
-);
+// Keep the unused body dormant until the first real round.
+ballBody.sleep();
+ball.visible = false;
 
 
 // ============================================================
 // FREE-PHYSICS REVOLUTION MEASUREMENT
 // ============================================================
 //
-// Measurement only.
-// Never alters motion.
+// Measurement only. Never alters motion.
 // ============================================================
 
-let lastAngle =
-    Math.atan2(
-        start.z,
-        start.x
-    );
+let tableRoundActive = false;
+let spinInProgress = false;
+let activeSpinRoundId = null;
 
+let lastAngle = 0;
 let accumulatedAngle = 0;
 let freeRevolutions = 0;
 
@@ -2630,6 +2498,7 @@ let settleCandidatePocketIndex =
     null;
 
 let settleCandidateTime = 0;
+
 
 function normalizeAngle(
     angle
@@ -2694,6 +2563,7 @@ function getCurrentPocketNumber(
     ];
 }
 
+
 function getRotorSurfaceVelocity(
     position
 ) {
@@ -2712,7 +2582,314 @@ function getRotorSurfaceVelocity(
 }
 
 
+function resetSpinPresentation() {
+    spinInProgress = false;
+    activeSpinRoundId = null;
+
+    ball.visible = false;
+
+    winnerDisplay.style.display =
+        "none";
+
+    enteredRotor = false;
+    settledPocketLogged = false;
+
+    settleCandidatePocketIndex =
+        null;
+
+    settleCandidateTime = 0;
+
+    accumulatedAngle = 0;
+    freeRevolutions = 0;
+    lastAngle = 0;
+
+    currentRotorPocketIndex =
+        null;
+
+    winningCrownPocketIndex =
+        null;
+
+    activeCrownPocketIndex =
+        null;
+}
+
+
+// ============================================================
+// RANDOMIZED TANGENTIAL BALL RELEASE
+// ============================================================
+
+function launchBallForRound(
+    roundId
+) {
+    if (
+        !Number.isInteger(roundId)
+    ) {
+        console.warn(
+            "Ignoring ball launch without a valid round id."
+        );
+
+        return;
+    }
+
+    const ballStartSpeed =
+        BALL_START_SPEED_MIN +
+        Math.random() *
+        (
+            BALL_START_SPEED_MAX -
+            BALL_START_SPEED_MIN
+        );
+
+    const startAngle =
+        Math.random() *
+        Math.PI *
+        2;
+
+    const launchDirectionJitterRadians =
+        (
+            Math.random() *
+            2 -
+            1
+        ) *
+        LAUNCH_DIRECTION_JITTER_DEGREES *
+        Math.PI /
+        180;
+
+    const initialSpinMultiplier =
+        1 +
+        (
+            Math.random() *
+            2 -
+            1
+        ) *
+        INITIAL_SPIN_JITTER_FRACTION;
+
+    // getBallCenterAtContact() offsets the sphere center along the
+    // local bowl normal, keeping it exactly BALL_RADIUS from the
+    // physical bowl at any random launch angle.
+    const start =
+        getBallCenterAtContact(
+            BALL_START_CONTACT_RADIUS,
+            startAngle
+        );
+
+    const launchDirectionAngle =
+        startAngle +
+        Math.PI / 2 +
+        launchDirectionJitterRadians;
+
+    const launchVelocity = {
+        x:
+            Math.cos(
+                launchDirectionAngle
+            ) *
+            ballStartSpeed,
+
+        y: 0,
+
+        z:
+            Math.sin(
+                launchDirectionAngle
+            ) *
+            ballStartSpeed
+    };
+
+    const startNormal =
+        new THREE.Vector3(
+            start.normal.x,
+            start.normal.y,
+            start.normal.z
+        );
+
+    const startVelocity =
+        new THREE.Vector3(
+            launchVelocity.x,
+            launchVelocity.y,
+            launchVelocity.z
+        );
+
+    const startAngularVelocity =
+        new THREE.Vector3()
+            .crossVectors(
+                startNormal,
+                startVelocity
+            )
+            .divideScalar(
+                BALL_RADIUS
+            )
+            .multiplyScalar(
+                initialSpinMultiplier
+            );
+
+    activeSpinRoundId =
+        roundId;
+
+    spinInProgress = true;
+
+    winnerDisplay.style.display =
+        "none";
+
+    enteredRotor = false;
+    settledPocketLogged = false;
+
+    settleCandidatePocketIndex =
+        null;
+
+    settleCandidateTime = 0;
+
+    accumulatedAngle = 0;
+    freeRevolutions = 0;
+
+    lastAngle =
+        Math.atan2(
+            start.z,
+            start.x
+        );
+
+    currentRotorPocketIndex =
+        null;
+
+    winningCrownPocketIndex =
+        null;
+
+    activeCrownPocketIndex =
+        null;
+
+    // Reset happens only BEFORE this new free-physics run.
+    ballBody.setTranslation(
+        {
+            x: start.x,
+            y: start.y,
+            z: start.z
+        },
+        true
+    );
+
+    ballBody.setRotation(
+        {
+            x: 0,
+            y: 0,
+            z: 0,
+            w: 1
+        },
+        true
+    );
+
+    ballBody.setLinvel(
+        launchVelocity,
+        true
+    );
+
+    ballBody.setAngvel(
+        {
+            x:
+                startAngularVelocity.x,
+
+            y:
+                startAngularVelocity.y,
+
+            z:
+                startAngularVelocity.z
+        },
+        true
+    );
+
+    ballBody.wakeUp();
+    ball.visible = true;
+
+    const startNaturalOrbitSpeed =
+        Math.sqrt(
+            9.81 *
+            start.centerRadius *
+            start.slope
+        );
+
+    console.log(
+        `Round #${roundId}: free-physics ball released.`,
+        "| launch speed:",
+        ballStartSpeed.toFixed(2),
+        "| start contact radius:",
+        BALL_START_CONTACT_RADIUS.toFixed(2),
+        "| start center radius:",
+        start.centerRadius.toFixed(2),
+        "| bowl slope:",
+        start.slope.toFixed(3),
+        "| natural orbit speed:",
+        startNaturalOrbitSpeed.toFixed(2),
+        "| rolling drag:",
+        ROLLING_DRAG.toFixed(3),
+        "| start angle:",
+        (
+            startAngle *
+            180 /
+            Math.PI
+        ).toFixed(1) + "deg",
+        "| direction jitter:",
+        (
+            launchDirectionJitterRadians *
+            180 /
+            Math.PI
+        ).toFixed(2) + "deg",
+        "| spin multiplier:",
+        initialSpinMultiplier.toFixed(3),
+        "| rotor speed:",
+        ROTOR_ANGULAR_SPEED.toFixed(3) + " rad/s",
+        "| rotor rpm:",
+        (
+            ROTOR_ANGULAR_SPEED *
+            60 /
+            (
+                Math.PI * 2
+            )
+        ).toFixed(2),
+        "| current rotor angle:",
+        (
+            normalizeAngle(rotorAngle) *
+            180 /
+            Math.PI
+        ).toFixed(1) + "deg",
+        "| launch vector:",
+        `(${launchVelocity.x.toFixed(2)}, ${launchVelocity.y.toFixed(2)}, ${launchVelocity.z.toFixed(2)})`
+    );
+}
+
+
+function sendPhysicalResultToBot(
+    winningNumber
+) {
+    if (
+        !Number.isInteger(activeSpinRoundId)
+    ) {
+        console.warn(
+            "Ball settled, but no active round id was attached to the spin."
+        );
+
+        return;
+    }
+
+    if (
+        typeof window.sendRouletteMessage !==
+        "function"
+    ) {
+        console.error(
+            "Ball settled, but the overlay WebSocket sender is unavailable."
+        );
+
+        return;
+    }
+
+    window.sendRouletteMessage({
+        type: "rouletteResult",
+        roundId: activeSpinRoundId,
+        winningNumber
+    });
+}
+
+
 function updateMeasurement() {
+    if (!spinInProgress) {
+        return;
+    }
+
     const position =
         ballBody.translation();
 
@@ -2786,13 +2963,6 @@ function updateMeasurement() {
 
     // --------------------------------------------------------
     // LIVE CROWN SECTOR FLASH
-    // --------------------------------------------------------
-    //
-    // Once the ball has entered the numbered rotor, flash the
-    // large crown marker every time its angular position moves
-    // into a different numbered sector.
-    //
-    // Visual only. Does not alter the rigid body.
     // --------------------------------------------------------
 
     if (
@@ -2882,9 +3052,6 @@ function updateMeasurement() {
                     FIXED_TIME_STEP;
             }
 
-            // Require the ball to remain slow RELATIVE to the same
-            // moving pocket briefly. This prevents a winner from
-            // being declared during a transient pass over a divider.
             if (
                 settleCandidateTime >=
                     SETTLE_HOLD_TIME
@@ -2915,6 +3082,15 @@ function updateMeasurement() {
 
                 activeCrownPocketIndex =
                     winningCrownPocketIndex;
+
+                // Stop measurement/result detection immediately,
+                // but leave the physical ball sitting naturally in
+                // the moving pocket while the result is displayed.
+                spinInProgress = false;
+
+                sendPhysicalResultToBot(
+                    winningNumber
+                );
             }
 
         } else {
@@ -2928,62 +3104,52 @@ function updateMeasurement() {
 
 
 // ============================================================
-// STARTUP DEBUG
+// ROUND EVENTS FROM overlay.html
 // ============================================================
 
-const startNaturalOrbitSpeed =
-    Math.sqrt(
-        9.81 *
-        start.centerRadius *
-        start.slope
-    );
+window.addEventListener(
+    "roulette-round-started",
+    event => {
+        tableRoundActive = true;
+        resetSpinPresentation();
+
+        if (
+            Number.isInteger(
+                Number(event.detail?.roundId)
+            )
+        ) {
+            activeSpinRoundId =
+                Number(event.detail.roundId);
+        }
+    }
+);
+
+
+window.addEventListener(
+    "roulette-launch-ball",
+    event => {
+        launchBallForRound(
+            Number(event.detail?.roundId)
+        );
+    }
+);
+
+
+window.addEventListener(
+    "roulette-hide-table",
+    () => {
+        tableRoundActive = false;
+        spinInProgress = false;
+        ball.visible = false;
+
+        winnerDisplay.style.display =
+            "none";
+    }
+);
+
 
 console.log(
-    "Fresh free-physics roulette started.",
-    "| launch speed:",
-    BALL_START_SPEED.toFixed(2),
-    "| start contact radius:",
-    BALL_START_CONTACT_RADIUS.toFixed(2),
-    "| start center radius:",
-    start.centerRadius.toFixed(2),
-    "| bowl slope:",
-    start.slope.toFixed(3),
-    "| natural orbit speed:",
-    startNaturalOrbitSpeed.toFixed(2),
-    "| rolling drag:",
-    ROLLING_DRAG.toFixed(3),
-    "| start angle:",
-    (
-        START_ANGLE *
-        180 /
-        Math.PI
-    ).toFixed(1) + "deg",
-    "| direction jitter:",
-    (
-        LAUNCH_DIRECTION_JITTER_RADIANS *
-        180 /
-        Math.PI
-    ).toFixed(2) + "deg",
-    "| spin multiplier:",
-    INITIAL_SPIN_MULTIPLIER.toFixed(3),
-    "| rotor speed:",
-    ROTOR_ANGULAR_SPEED.toFixed(3) + " rad/s",
-    "| rotor rpm:",
-    (
-        ROTOR_ANGULAR_SPEED *
-        60 /
-        (
-            Math.PI * 2
-        )
-    ).toFixed(2),
-    "| rotor start angle:",
-    (
-        ROTOR_START_ANGLE *
-        180 /
-        Math.PI
-    ).toFixed(1) + "deg",
-    "| launch vector:",
-    `(${launchVelocity.x.toFixed(2)}, ${launchVelocity.y.toFixed(2)}, ${launchVelocity.z.toFixed(2)})`
+    "Roulette physics loaded. Waiting for a Twitch round before releasing the ball."
 );
 
 
@@ -3066,6 +3232,13 @@ function animate(
             0.1
         );
 
+    // Idle means truly idle: no hidden 240 Hz physics loop and no
+    // unnecessary Three.js render work while nothing is on stream.
+    if (!tableRoundActive) {
+        physicsAccumulator = 0;
+        return;
+    }
+
     physicsAccumulator +=
         frameTime;
 
@@ -3110,6 +3283,7 @@ function animate(
         frameTime;
 
     if (
+        spinInProgress &&
         debugElapsed >=
         0.5
     ) {

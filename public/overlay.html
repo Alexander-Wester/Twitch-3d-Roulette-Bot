@@ -2,7 +2,6 @@
 <html lang="en">
 
 <head>
-
     <meta charset="UTF-8">
 
     <meta
@@ -13,109 +12,372 @@
     <title>Rhino's Roulette</title>
 
     <style>
-
         html,
         body {
             margin: 0;
-
             width: 100%;
             height: 100%;
-
             overflow: hidden;
-
             background: transparent;
+        }
+
+        body {
+            opacity: 1;
+            transition: opacity 180ms ease;
+        }
+
+        body.overlay-hidden {
+            opacity: 0;
         }
 
         canvas {
             display: block;
-
             width: 100%;
             height: 100%;
         }
 
-
-        #connection-status {
+        #betting-panel {
             position: absolute;
+            left: 50%;
+            top: 5%;
+            transform: translateX(-50%);
+            z-index: 30;
 
-            left: 20px;
-            bottom: 20px;
+            min-width: min(520px, 72vw);
+            padding: 14px 22px 13px;
 
-            padding: 8px 12px;
-
-            font-family:
-                Arial,
-                Helvetica,
-                sans-serif;
-
-            font-size: 14px;
-
+            text-align: center;
+            font-family: Arial, Helvetica, sans-serif;
             color: white;
 
-            background:
-                rgba(0, 0, 0, 0.65);
+            background: rgba(0, 0, 0, 0.80);
+            border: 2px solid rgba(218, 190, 104, 0.95);
+            border-radius: 12px;
 
-            border-radius: 6px;
+            box-shadow:
+                0 5px 20px rgba(0, 0, 0, 0.45),
+                inset 0 0 18px rgba(197, 163, 78, 0.10);
+
+            pointer-events: none;
         }
 
-    </style>
+        #betting-panel.hidden {
+            display: none;
+        }
 
+        #betting-title {
+            font-size: clamp(24px, 4.1vw, 50px);
+            line-height: 1;
+            font-weight: 900;
+            letter-spacing: 0.04em;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+        }
+
+        #betting-command {
+            margin-top: 8px;
+            font-size: clamp(15px, 2.0vw, 26px);
+            line-height: 1.1;
+            font-weight: 700;
+            color: #f1dc92;
+            white-space: nowrap;
+        }
+
+        #betting-timer {
+            margin-top: 8px;
+            font-size: clamp(25px, 4.5vw, 54px);
+            line-height: 1;
+            font-weight: 900;
+            font-variant-numeric: tabular-nums;
+        }
+    </style>
 </head>
 
+<body class="overlay-hidden">
 
-<body>
+    <div
+        id="betting-panel"
+        class="hidden"
+    >
+        <div id="betting-title">
+            PLACE YOUR BETS
+        </div>
 
-    <div id="connection-status">
-        Connecting...
+        <div id="betting-command">
+            !gamble &lt;result&gt; &lt;amount&gt;
+        </div>
+
+        <div id="betting-timer">
+            20.0s
+        </div>
     </div>
 
 
     <script>
-
-        const statusElement =
+        const bettingPanel =
             document.getElementById(
-                "connection-status"
+                "betting-panel"
             );
+
+        const bettingTimer =
+            document.getElementById(
+                "betting-timer"
+            );
+
+        let socket = null;
+        let currentRoundId = null;
+        let bettingEndsAt = 0;
+        let timerFrame = null;
+        const outboundQueue = [];
+
+
+        function showTable() {
+            document.body.classList.remove(
+                "overlay-hidden"
+            );
+        }
+
+
+        function hideTable() {
+            bettingPanel.classList.add(
+                "hidden"
+            );
+
+            document.body.classList.add(
+                "overlay-hidden"
+            );
+        }
+
+
+        function stopBettingTimer() {
+            if (timerFrame !== null) {
+                cancelAnimationFrame(
+                    timerFrame
+                );
+
+                timerFrame = null;
+            }
+        }
+
+
+        function updateBettingTimer() {
+            const remainingMs = Math.max(
+                0,
+                bettingEndsAt - Date.now()
+            );
+
+            bettingTimer.textContent =
+                `${(remainingMs / 1000).toFixed(1)}s`;
+
+            if (remainingMs > 0) {
+                timerFrame =
+                    requestAnimationFrame(
+                        updateBettingTimer
+                    );
+            } else {
+                timerFrame = null;
+            }
+        }
+
+
+        function startBettingDisplay(data) {
+            currentRoundId = data.roundId;
+            bettingEndsAt = data.bettingEndsAt;
+
+            showTable();
+
+            bettingPanel.classList.remove(
+                "hidden"
+            );
+
+            stopBettingTimer();
+            updateBettingTimer();
+
+            window.dispatchEvent(
+                new CustomEvent(
+                    "roulette-round-started",
+                    {
+                        detail: data
+                    }
+                )
+            );
+        }
+
+
+        function closeBettingDisplay(data) {
+            if (
+                currentRoundId !== null &&
+                data.roundId !== currentRoundId
+            ) {
+                return;
+            }
+
+            stopBettingTimer();
+
+            bettingTimer.textContent =
+                "0.0s";
+
+            bettingPanel.classList.add(
+                "hidden"
+            );
+
+            window.dispatchEvent(
+                new CustomEvent(
+                    "roulette-betting-closed",
+                    {
+                        detail: data
+                    }
+                )
+            );
+        }
+
+
+        window.sendRouletteMessage =
+            function sendRouletteMessage(data) {
+                const message =
+                    JSON.stringify(data);
+
+                if (
+                    socket &&
+                    socket.readyState === WebSocket.OPEN
+                ) {
+                    socket.send(message);
+                    return;
+                }
+
+                // A brief local connection interruption should not
+                // lose the physical result. Send it after reconnect.
+                outboundQueue.push(message);
+            };
+
+
+        function flushOutboundQueue() {
+            if (
+                !socket ||
+                socket.readyState !== WebSocket.OPEN
+            ) {
+                return;
+            }
+
+            while (outboundQueue.length > 0) {
+                socket.send(
+                    outboundQueue.shift()
+                );
+            }
+        }
+
+
+        function handleBotMessage(data) {
+            switch (data.type) {
+                case "connected":
+                    console.log(
+                        "Roulette overlay connected to bot."
+                    );
+                    break;
+
+                case "roundStarted":
+                    startBettingDisplay(data);
+                    break;
+
+                case "bettingClosed":
+                    closeBettingDisplay(data);
+                    break;
+
+                case "launchBall":
+                    if (
+                        currentRoundId !== null &&
+                        data.roundId !== currentRoundId
+                    ) {
+                        return;
+                    }
+
+                    window.dispatchEvent(
+                        new CustomEvent(
+                            "roulette-launch-ball",
+                            {
+                                detail: data
+                            }
+                        )
+                    );
+                    break;
+
+                case "roundResolved":
+                    // roulette.js already shows the physical winner
+                    // immediately. The server will send hideTable
+                    // after the short result display period.
+                    break;
+
+                case "hideTable":
+                    if (
+                        currentRoundId !== null &&
+                        data.roundId !== currentRoundId
+                    ) {
+                        return;
+                    }
+
+                    hideTable();
+
+                    window.dispatchEvent(
+                        new CustomEvent(
+                            "roulette-hide-table",
+                            {
+                                detail: data
+                            }
+                        )
+                    );
+
+                    currentRoundId = null;
+                    break;
+            }
+        }
 
 
         function connectToBot() {
-
-            const socket =
-                new WebSocket(
-                    `ws://${window.location.host}`
-                );
-
+            socket = new WebSocket(
+                `ws://${window.location.host}`
+            );
 
             socket.addEventListener(
                 "open",
                 () => {
-
-                    statusElement.textContent =
-                        "Bot connected";
-
+                    flushOutboundQueue();
                 }
             );
 
+            socket.addEventListener(
+                "message",
+                event => {
+                    try {
+                        const data = JSON.parse(
+                            event.data
+                        );
+
+                        handleBotMessage(data);
+                    } catch (error) {
+                        console.error(
+                            "Could not read bot overlay message:",
+                            error
+                        );
+                    }
+                }
+            );
 
             socket.addEventListener(
                 "close",
                 () => {
-
-                    statusElement.textContent =
-                        "Bot disconnected";
+                    console.log(
+                        "Roulette overlay disconnected. Reconnecting..."
+                    );
 
                     setTimeout(
                         connectToBot,
                         2000
                     );
-
                 }
             );
-
         }
 
 
         connectToBot();
-
     </script>
 
 
