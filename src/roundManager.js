@@ -1,12 +1,17 @@
 const {
     getBalance,
     changeBalance,
-    saveRouletteResult
+    saveRouletteResult,
+    getNextRouletteRoundId
 } = require("./database");
 
 const {
     broadcastOverlayMessage
 } = require("./overlayServer");
+
+const {
+    getSettings
+} = require("./settings");
 
 const {
     getBettingClosedLine,
@@ -22,46 +27,8 @@ const {
     getBiggestLoserLine
 } = require("./rouletteLines");
 
-const BETTING_TIME_MIN_MS = 20000;
-const BETTING_TIME_MAX_MS = 22000;
 const BALL_RELEASE_DELAY_MS = 500;
 const RESULT_DISPLAY_MS = 4000;
-const COOLDOWN_TIME_MS = 5 * 60 * 1000;
-
-
-// ----------------------------------------------------
-// Chat result configuration
-//
-// Defaults to TRUE for smaller chats.
-// Set ANNOUNCE_ALL_RESULTS=false in .env for larger chats.
-// ----------------------------------------------------
-
-function readBooleanEnv(name, defaultValue) {
-    const rawValue = process.env[name];
-
-    if (
-        rawValue === undefined ||
-        rawValue === null ||
-        rawValue.trim() === ""
-    ) {
-        return defaultValue;
-    }
-
-    return ![
-        "false",
-        "0",
-        "no",
-        "off"
-    ].includes(
-        rawValue.trim().toLowerCase()
-    );
-}
-
-const ANNOUNCE_ALL_RESULTS =
-    readBooleanEnv(
-        "ANNOUNCE_ALL_RESULTS",
-        true
-    );
 
 const RED_NUMBERS = new Set([
     1, 3, 5, 7, 9,
@@ -71,7 +38,9 @@ const RED_NUMBERS = new Set([
 ]);
 
 let activeRound = null;
-let nextRoundId = 1;
+// Continue round numbering across launches so completed-result
+// history is never overwritten by reused round IDs.
+let nextRoundId = getNextRouletteRoundId();
 let cooldownEndsAt = 0;
 let hideTableTimer = null;
 
@@ -88,13 +57,21 @@ let previousRoundHighlights = {
 // ----------------------------------------------------
 
 function randomBettingTimeMs() {
+    const settings = getSettings();
+
+    const minimumMs =
+        settings.bettingTimeMinSeconds * 1000;
+
+    const maximumMs =
+        settings.bettingTimeMaxSeconds * 1000;
+
     return (
-        BETTING_TIME_MIN_MS +
+        minimumMs +
         Math.floor(
             Math.random() *
             (
-                BETTING_TIME_MAX_MS -
-                BETTING_TIME_MIN_MS +
+                maximumMs -
+                minimumMs +
                 1
             )
         )
@@ -756,8 +733,11 @@ function resolveRound(winningNumber) {
         `Round #${round.id} resolved: ${winningNumber}`
     );
 
+    const cooldownMs =
+        getSettings().cooldownMinutes * 60 * 1000;
+
     cooldownEndsAt =
-        Date.now() + COOLDOWN_TIME_MS;
+        Date.now() + cooldownMs;
 
     activeRound = null;
 
@@ -921,7 +901,7 @@ async function announceResolvedRound(
     // announce every user's NET result exactly once.
     // ------------------------------------------------
 
-    if (ANNOUNCE_ALL_RESULTS) {
+    if (getSettings().announceAllResults) {
         for (const summary of summaries) {
             await sendChatMessage(
                 getUserResultLine(
@@ -1045,6 +1025,16 @@ async function handleOverlayMessage(
         return;
     }
 
+    // Negative round IDs are reserved for the desktop Debug tab's
+    // isolated overlay test spins. They exercise the real physics,
+    // but must never create payouts or Twitch result messages.
+    if (roundId < 0) {
+        console.log(
+            `[Debug] Overlay test spin settled on ${winningNumber}.`
+        );
+        return;
+    }
+
     if (
         !activeRound ||
         activeRound.id !== roundId ||
@@ -1133,6 +1123,55 @@ function getOverlayStateMessages() {
     return messages;
 }
 
+function cancelActiveRound(reason = "Cancelled from the desktop Debug tab.") {
+    if (!activeRound) {
+        return {
+            success: false,
+            reason: "no_active_round"
+        };
+    }
+
+    const round = activeRound;
+
+    clearTimeout(round.closeTimer);
+    clearTimeout(round.launchTimer);
+
+    if (hideTableTimer) {
+        clearTimeout(hideTableTimer);
+        hideTableTimer = null;
+    }
+
+    const betCount = round.bets.length;
+    const userCount = new Set(
+        round.bets.map(bet => bet.userId)
+    ).size;
+
+    // Bets are only reserved while a round is active. No stake is
+    // removed from the database until resolveRound(), so cancelling
+    // here automatically leaves every viewer's balance untouched.
+    activeRound = null;
+    cooldownEndsAt = 0;
+
+    broadcastOverlayMessage({
+        type: "hideTable",
+        roundId: round.id
+    });
+
+    console.warn(
+        `[Debug] Round #${round.id} cancelled. ` +
+        `${betCount} bet(s) from ${userCount} viewer(s) released. ` +
+        reason
+    );
+
+    return {
+        success: true,
+        roundId: round.id,
+        betCount,
+        userCount
+    };
+}
+
+
 function getActiveRound() {
     return activeRound;
 }
@@ -1149,6 +1188,5 @@ module.exports = {
     getCooldownRemainingMs,
     getRouletteState,
     getOverlayStateMessages,
-    COOLDOWN_TIME_MS,
-    ANNOUNCE_ALL_RESULTS
+    cancelActiveRound
 };

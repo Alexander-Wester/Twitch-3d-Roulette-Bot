@@ -17,7 +17,9 @@ const {
 
 const {
     startBot,
-    getBotStatus
+    getBotStatus,
+    sendChatMessage,
+    reconnectTwitch
 } = require("../src/twitchBot");
 
 const {
@@ -25,9 +27,36 @@ const {
     hasTwitchClientId
 } = require("../src/appConfig");
 
+const {
+    getSettings,
+    saveSettings,
+    restoreDefaultSettings,
+    setSettingsStorageDir,
+    onSettingsChanged
+} = require("../src/settings");
+
+const {
+    broadcastOverlayMessage,
+    getOverlayStatus
+} = require("../src/overlayServer");
+
+const {
+    getRouletteState,
+    getActiveRound,
+    cancelActiveRound
+} = require("../src/roundManager");
+
+const {
+    initializeLogger,
+    getRecentLogs,
+    getLogDirectory,
+    onLogEntry
+} = require("../src/logger");
+
 let mainWindow = null;
 let authDirectory = null;
 let startBotPromise = null;
+let nextDebugRoundId = -1;
 
 
 function sendToRenderer(channel, payload) {
@@ -45,10 +74,10 @@ function sendToRenderer(channel, payload) {
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 980,
-        height: 760,
-        minWidth: 860,
-        minHeight: 650,
+        width: 1120,
+        height: 820,
+        minWidth: 900,
+        minHeight: 680,
         backgroundColor: "#101018",
         title: "Rhino's Roulette Bot",
         autoHideMenuBar: true,
@@ -155,6 +184,131 @@ async function maybeStartBot() {
 }
 
 
+async function getDebugState() {
+    const activeRound = getActiveRound();
+    const [broadcaster, bot] = await Promise.all([
+        getAuthStatus("broadcaster"),
+        getAuthStatus("bot")
+    ]);
+
+    return {
+        appVersion: app.getVersion(),
+        platform: `${process.platform} ${process.arch}`,
+        nodeVersion: process.versions.node,
+        electronVersion: process.versions.electron,
+        userDataDirectory: app.getPath("userData"),
+        botRuntime: getBotStatus(),
+        roulette: {
+            ...getRouletteState(),
+            betCount: activeRound?.bets?.length || 0,
+            userCount: activeRound
+                ? new Set(
+                    activeRound.bets.map(bet => bet.userId)
+                ).size
+                : 0
+        },
+        overlay: getOverlayStatus(),
+        auth: {
+            broadcaster: {
+                connected: broadcaster.connected,
+                login: broadcaster.login,
+                expiresIn: broadcaster.expiresIn ?? null
+            },
+            bot: {
+                connected: bot.connected,
+                login: bot.login,
+                expiresIn: bot.expiresIn ?? null
+            }
+        },
+        settings: getSettings()
+    };
+}
+
+
+function activeRoundBlocksOverlayTest() {
+    const status = getRouletteState().status;
+
+    return [
+        "betting",
+        "closed",
+        "spinning",
+        "resolving"
+    ].includes(status);
+}
+
+
+function startDebugOverlaySpin() {
+    const overlayStatus =
+        getOverlayStatus();
+
+    if (overlayStatus.clientCount < 1) {
+        throw new Error(
+            "No OBS overlay is connected. Add or activate the Browser Source first."
+        );
+    }
+
+    if (overlayStatus.readyClientCount < 1) {
+        throw new Error(
+            "The OBS overlay is connected but the roulette physics is still loading. Wait a moment and try again."
+        );
+    }
+
+    if (activeRoundBlocksOverlayTest()) {
+        throw new Error(
+            "A real roulette round is active. Wait for it to finish or cancel it first."
+        );
+    }
+
+    const roundId = nextDebugRoundId--;
+    const bettingDurationMs = 2500;
+    const bettingEndsAt = Date.now() + bettingDurationMs;
+
+    broadcastOverlayMessage({
+        type: "roundStarted",
+        roundId,
+        bettingDurationMs,
+        bettingEndsAt,
+        debug: true
+    });
+
+    setTimeout(
+        () => broadcastOverlayMessage({
+            type: "bettingClosed",
+            roundId,
+            debug: true
+        }),
+        bettingDurationMs
+    ).unref?.();
+
+    setTimeout(
+        () => broadcastOverlayMessage({
+            type: "launchBall",
+            roundId,
+            debug: true
+        }),
+        bettingDurationMs + 500
+    ).unref?.();
+
+    // A debug spin does not pass through roundManager's normal
+    // result-display timer, so clean it up after enough time for
+    // the physical wheel to settle and show its result.
+    setTimeout(
+        () => broadcastOverlayMessage({
+            type: "hideTable",
+            roundId,
+            debug: true
+        }),
+        32000
+    ).unref?.();
+
+    console.log(
+        `[Debug] Started isolated overlay test spin ${roundId}.`
+    );
+
+    return roundId;
+}
+
+
 function registerIpcHandlers() {
     ipcMain.handle(
         "setup:get-state",
@@ -235,6 +389,53 @@ function registerIpcHandlers() {
     );
 
     ipcMain.handle(
+        "settings:get",
+        async () => ({
+            success: true,
+            settings: getSettings()
+        })
+    );
+
+    ipcMain.handle(
+        "settings:update",
+        async (_event, nextSettings) => {
+            try {
+                return {
+                    success: true,
+                    settings: saveSettings(
+                        nextSettings
+                    )
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message,
+                    validationErrors:
+                        error.validationErrors || {}
+                };
+            }
+        }
+    );
+
+    ipcMain.handle(
+        "settings:restore-defaults",
+        async () => {
+            try {
+                return {
+                    success: true,
+                    settings:
+                        restoreDefaultSettings()
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+    );
+
+    ipcMain.handle(
         "overlay:copy-url",
         async () => {
             await Promise.resolve(
@@ -269,14 +470,336 @@ function registerIpcHandlers() {
             };
         }
     );
+
+
+    ipcMain.handle(
+        "clipboard:copy-text",
+        async (_event, text) => {
+            clipboard.writeText(
+                String(text || "")
+            );
+
+            return { success: true };
+        }
+    );
+
+    ipcMain.handle(
+        "logs:get-recent",
+        async (_event, limit = 750) => ({
+            success: true,
+            entries: getRecentLogs(limit)
+        })
+    );
+
+    ipcMain.handle(
+        "logs:open-folder",
+        async () => {
+            const error = await shell.openPath(
+                getLogDirectory()
+            );
+
+            return error
+                ? { success: false, error }
+                : { success: true };
+        }
+    );
+
+    ipcMain.handle(
+        "debug:get-state",
+        async () => ({
+            success: true,
+            state: await getDebugState()
+        })
+    );
+
+    ipcMain.handle(
+        "debug:copy-diagnostics",
+        async () => {
+            const diagnostics = await getDebugState();
+
+            clipboard.writeText(
+                JSON.stringify(
+                    diagnostics,
+                    null,
+                    2
+                )
+            );
+
+            console.log(
+                "[Debug] Diagnostics copied to clipboard."
+            );
+
+            return { success: true };
+        }
+    );
+
+    ipcMain.handle(
+        "debug:open-data-folder",
+        async () => {
+            const error = await shell.openPath(
+                app.getPath("userData")
+            );
+
+            return error
+                ? { success: false, error }
+                : { success: true };
+        }
+    );
+
+    ipcMain.handle(
+        "debug:open-devtools",
+        async () => {
+            mainWindow?.webContents.openDevTools({
+                mode: "detach"
+            });
+
+            console.log(
+                "[Debug] Developer Tools opened."
+            );
+
+            return { success: true };
+        }
+    );
+
+    ipcMain.handle(
+        "debug:restart-app",
+        async () => {
+            console.warn(
+                "[Debug] Application restart requested."
+            );
+
+            setTimeout(() => {
+                app.relaunch();
+                app.exit(0);
+            }, 250);
+
+            return { success: true };
+        }
+    );
+
+    ipcMain.handle(
+        "debug:reconnect-twitch",
+        async () => {
+            try {
+                const status = await reconnectTwitch();
+
+                return {
+                    success: true,
+                    status
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+    );
+
+    ipcMain.handle(
+        "debug:send-chat-test",
+        async (_event, rawMessage) => {
+            try {
+                if (!getBotStatus().started) {
+                    throw new Error(
+                        "RouletteBot is not connected to Twitch yet."
+                    );
+                }
+
+                const message = String(
+                    rawMessage ||
+                    "🎰 RouletteBot debug test: chat connection is working."
+                ).trim();
+
+                if (!message) {
+                    throw new Error(
+                        "Enter a chat test message first."
+                    );
+                }
+
+                if (message.length > 450) {
+                    throw new Error(
+                        "Debug chat message is too long."
+                    );
+                }
+
+                await sendChatMessage(message);
+
+                console.log(
+                    `[Debug] Live chat test sent: ${message}`
+                );
+
+                return { success: true };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+    );
+
+    ipcMain.handle(
+        "debug:overlay-show",
+        async () => {
+            const overlayStatus =
+                getOverlayStatus();
+
+            if (overlayStatus.clientCount < 1) {
+                return {
+                    success: false,
+                    error: "No OBS overlay is connected. Add or activate the Browser Source first."
+                };
+            }
+
+            if (overlayStatus.readyClientCount < 1) {
+                return {
+                    success: false,
+                    error: "The OBS overlay is connected but the roulette physics is still loading. Wait a moment and try again."
+                };
+            }
+
+            if (activeRoundBlocksOverlayTest()) {
+                return {
+                    success: false,
+                    error: "A real roulette round is active."
+                };
+            }
+
+            const roundId = nextDebugRoundId--;
+
+            broadcastOverlayMessage({
+                type: "debugShowTable",
+                roundId,
+                debug: true
+            });
+
+            console.log(
+                "[Debug] Overlay table shown."
+            );
+
+            return { success: true };
+        }
+    );
+
+    ipcMain.handle(
+        "debug:overlay-hide",
+        async () => {
+            const overlayStatus =
+                getOverlayStatus();
+
+            if (overlayStatus.clientCount < 1) {
+                return {
+                    success: false,
+                    error: "No OBS overlay is connected. Add or activate the Browser Source first."
+                };
+            }
+
+            if (overlayStatus.readyClientCount < 1) {
+                return {
+                    success: false,
+                    error: "The OBS overlay is connected but the roulette physics is still loading. Wait a moment and try again."
+                };
+            }
+
+            if (activeRoundBlocksOverlayTest()) {
+                return {
+                    success: false,
+                    error: "A real roulette round is active. Use Cancel Active Round if you need to stop it."
+                };
+            }
+
+            broadcastOverlayMessage({
+                type: "debugHideTable",
+                debug: true
+            });
+
+            console.log(
+                "[Debug] Overlay table hidden."
+            );
+
+            return { success: true };
+        }
+    );
+
+    ipcMain.handle(
+        "debug:overlay-spin",
+        async () => {
+            try {
+                return {
+                    success: true,
+                    roundId: startDebugOverlaySpin()
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+    );
+
+    ipcMain.handle(
+        "debug:cancel-round",
+        async () => {
+            try {
+                const result = cancelActiveRound();
+
+                if (!result.success) {
+                    return {
+                        success: false,
+                        error: "There is no active roulette round to cancel."
+                    };
+                }
+
+                if (getBotStatus().started) {
+                    await sendChatMessage(
+                        "⚠ Roulette round cancelled by the streamer. No bets were charged."
+                    );
+                }
+
+                return {
+                    success: true,
+                    result
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+    );
 }
 
 
 app.whenReady().then(async () => {
     app.setName("Rhino's Roulette Bot");
 
+    const userDataDirectory =
+        app.getPath("userData");
+
+    initializeLogger({
+        storageDir: userDataDirectory
+    });
+
+    onLogEntry(entry => {
+        sendToRenderer(
+            "logs:entry",
+            entry
+        );
+    });
+
+    console.log(
+        `[App] Rhino's Roulette Bot v${app.getVersion()} starting.`
+    );
+
+    setSettingsStorageDir(
+        userDataDirectory
+    );
+
     authDirectory = path.join(
-        app.getPath("userData"),
+        userDataDirectory,
         "auth"
     );
 
@@ -294,6 +817,19 @@ app.whenReady().then(async () => {
     );
 
     registerIpcHandlers();
+
+    onSettingsChanged(
+        (settings, changedKeys) => {
+            sendToRenderer(
+                "settings:changed",
+                {
+                    settings,
+                    changedKeys
+                }
+            );
+        }
+    );
+
     createWindow();
 
     mainWindow.webContents.once(

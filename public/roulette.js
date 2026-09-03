@@ -3148,6 +3148,15 @@ window.addEventListener(
 );
 
 
+// Signal overlay.html only after Three.js, Rapier, the scene, and all
+// roulette event listeners are fully initialized. This prevents early
+// debug/show/test messages from arriving before the physics layer exists.
+window.dispatchEvent(
+    new CustomEvent(
+        "roulette-physics-ready"
+    )
+);
+
 console.log(
     "Roulette physics loaded. Waiting for a Twitch round before releasing the ball."
 );

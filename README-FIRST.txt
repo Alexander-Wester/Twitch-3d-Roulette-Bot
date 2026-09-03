@@ -1,113 +1,154 @@
-RHINO'S ROULETTE BOT - PHASE 1 DESKTOP UI
-==========================================
+RHINO'S ROULETTE BOT - PHASE 3 LOGS & DEBUG
+============================================
 
-WHAT THIS UPDATE ADDS
----------------------
-- Electron desktop setup window.
-- Separate Twitch Broadcaster login.
-- Separate Twitch Bot login.
-- OBS overlay URL + setup instructions.
-- Copy URL button.
-- Bot /mod command helper.
-- Twitch access-token validation and automatic refresh.
-- Saved authorizations live in Windows AppData instead of GitHub/project files.
-- TWITCH_CHANNEL is no longer needed; the Broadcaster login determines the channel.
-- Existing project-root tokens.json can be imported automatically once as the bot login.
-- Passive income now asks for the current refreshed Twitch token each payment cycle.
-
-INSTALL INTO YOUR EXISTING PROJECT
-----------------------------------
-1. Back up your project first.
-
-2. Copy the folders/files from this package into the ROOT of your project:
-
-   desktop/
-   src/twitchAuth.js
-   src/twitchBot.js
-   src/passiveIncome.js
-   package.json
-
-   The existing public/, src/database.js, src/commands.js, roulette files, etc.
-   stay exactly where they already are.
-
-3. Your .env only needs the Twitch Client ID for this UI:
-
-   TWITCH_CLIENT_ID=your_client_id_here
-
-   TWITCH_CHANNEL can remain for now, but the new desktop app ignores it.
-   The Broadcaster Twitch login determines the channel automatically.
-
-4. In a terminal at the project root, run:
-
-   npm install
-
-5. Start the desktop app with:
-
-   npm start
-
-FIRST RUN
----------
-1. Click Connect Broadcaster.
-   - Authorize with the MAIN STREAMER Twitch account.
-
-2. Click Connect Bot Account.
-   - Authorize with the BOT Twitch account.
-   - If your old tokens.json is still valid, the app may automatically import it
-     as the bot account and you may not need this step on your current PC.
-
-3. Mod the bot account in the broadcaster's chat. The UI gives you the command.
-
-4. Add this Browser Source to OBS:
-
-   http://localhost:3000/overlay
-
-   Width: 1920
-   Height: 1080
-
-5. After both Twitch accounts are authorized, RouletteBot starts automatically.
-
-TOKEN / RE-LOGIN BEHAVIOR
--------------------------
-Twitch Device Code access tokens are still roughly 4-hour tokens. This update does
-NOT try to make an access token live for 30 days. Instead, it does the correct thing:
-it automatically uses the refresh token before the access token expires, saves the
-new access token, AND saves Twitch's replacement one-time refresh token.
-
-Normal result: you should no longer need to manually log in every ~4 hours.
-
-For Twitch public clients, a refresh token expires after 30 DAYS OF INACTIVITY.
-Therefore, if RouletteBot is used regularly, you can remain signed in beyond 30 days.
-If the app has not refreshed that authorization for 30 days, Twitch may require one
-new login.
-
-WHERE AUTH IS SAVED
--------------------
-Electron stores the two Twitch authorization files under the current Windows user's
-application data directory, inside the app's userData/auth folder. They are not part
-of the GitHub download.
-
-IMPORTANT
----------
-- Do not commit tokens.json or any *.tokens.json credentials to GitHub.
-- Never put a Twitch Client Secret into this downloadable desktop application.
-- Your Twitch Developer Application should be configured as a PUBLIC client for the
-  Device Code flow used here.
-
-NEXT PHASE
+THIS BUILD
 ----------
-The Settings tab is intentionally shown as "Coming next". The next update can move
-hard-coded values (cooldown, passive income amount/time, starting balance, minimum
-bet, idle reminder, show-all-results, etc.) into settings.json and the UI.
+Version: 1.3.0
 
-RECONNECTING AN ACCOUNT
------------------------
-If RouletteBot is already running and you click Reconnect Broadcaster or Reconnect Bot,
-the app will automatically restart itself after the new authorization is saved. This is
-intentional so the old Twitch EventSub connection cannot remain attached to the old account.
+This update is built directly on top of the Phase 2 Settings UI.
+Setup, OAuth refresh, settings, roulette personality, passive income,
+and the OBS overlay remain in place.
 
-GITHUB / CLIENT ID NOTE
------------------------
-TWITCH_CLIENT_ID is the public identifier for your registered Twitch application, not a
-password or OAuth token. For this first UI pass the app still reads it from .env. Before a
-truly zero-setup GitHub release, we can move that one public value into the packaged app so
-a downloader does not need to create or edit .env at all.
+NEW: LOGS TAB
+-------------
+The desktop app now keeps a live backend log view with:
+- All / Info / Warning / Error filters
+- Text search
+- Auto-scroll
+- Clear View (does not delete the saved file)
+- Copy Visible
+- Open Log Folder
+
+Backend console.log / console.warn / console.error output is captured automatically,
+so existing Twitch, roulette, passive-income, auth, and overlay-server messages appear
+without rewriting every source file.
+
+Daily log files are written to:
+
+Electron userData/logs/roulettebot-YYYY-MM-DD.log
+
+OAuth-style access_token, refresh_token, Authorization Bearer/OAuth, and client_secret
+values are redacted before a line is written to disk.
+
+NEW: DEBUG TAB
+--------------
+The Debug page includes live diagnostics for:
+- Twitch connection state
+- Current roulette lifecycle state
+- Current round bet/viewer count
+- Overlay server status and connected Browser Source count
+- Application / Electron / Node version
+
+DEBUG ACTIONS
+-------------
+Twitch:
+- Reconnect Twitch EventSub without restarting the whole app
+- Send a live test message through the connected bot account
+
+OBS overlay:
+- Show Table
+- Hide Table
+- Run Test Spin
+
+Test Spin uses the real wheel physics but uses a negative debug round ID.
+Its physical result is deliberately ignored by roundManager, so it:
+- does not create or resolve a real round
+- does not change balances
+- does not post a result in Twitch chat
+
+Round recovery:
+- Cancel Active Round
+
+IMPORTANT: Roulette bets are reserved in memory until resolveRound(). They are not
+removed from the database when placed. Therefore cancelling an active round releases
+all pending bets without needing a balance refund. The bot posts a cancellation notice
+in Twitch chat.
+
+Developer / support tools:
+- Copy Diagnostics
+- Open App Data Folder
+- Open Log Folder
+- Open Developer Tools
+- Restart RouletteBot
+
+COPY DIAGNOSTICS
+----------------
+Copy Diagnostics intentionally includes only useful non-secret state such as:
+- app/platform versions
+- connected account names/status
+- Twitch runtime status
+- roulette state
+- overlay status
+- current settings
+
+It does NOT include OAuth access tokens or refresh tokens.
+
+PHASE 2 SETTINGS STILL AVAILABLE
+--------------------------------
+Economy:
+- Starting chips (default 1,000)
+- Minimum bet (default 100)
+- Passive income enabled / disabled
+- Passive income amount (default 200)
+- Passive income interval (default 5 minutes)
+
+Round timing:
+- Betting timer minimum (default 20 seconds)
+- Betting timer maximum (default 22 seconds)
+- Roulette cooldown (default 5 minutes)
+
+Chat:
+- Idle gamble reminders enabled / disabled
+- Idle reminder interval (default 20 minutes)
+- Show every user's result enabled / disabled
+
+WHERE LOCAL DATA IS SAVED
+-------------------------
+Twitch OAuth files:
+Electron userData/auth/
+
+Settings:
+Electron userData/settings.json
+
+Logs:
+Electron userData/logs/
+
+The existing roulette database still follows the project's current database.js behavior
+and remains in the project's ignored data/ folder for now.
+
+OBS
+---
+Overlay URL:
+
+http://localhost:3000/overlay
+
+Recommended Browser Source size:
+1920 x 1080
+
+RUNNING THE APP
+---------------
+There are no new npm dependencies in Phase 3.
+
+If dependencies are already installed:
+
+npm start
+
+For a fresh checkout:
+
+npm install
+npm start
+
+GITHUB / PRIVATE DATA
+---------------------
+Keep these ignored:
+
+node_modules/
+.env
+tokens.json
+*.tokens.json
+data/
+roulette.db
+dist/
+
+The public Twitch Client ID remains in src/appConfig.js.
+Never commit Twitch passwords, access tokens, refresh tokens, or a Client Secret.

@@ -2,7 +2,10 @@ const { DatabaseSync } = require("node:sqlite");
 const fs = require("fs");
 const path = require("path");
 
-const STARTING_BALANCE = 1000;
+const {
+    getSettings,
+    DEFAULT_SETTINGS
+} = require("./settings");
 
 // Make sure /data exists.
 const dataDirectory = path.join(__dirname, "..", "data");
@@ -28,7 +31,7 @@ db.exec(`
     CREATE TABLE IF NOT EXISTS users (
         twitch_user_id TEXT PRIMARY KEY,
         username TEXT NOT NULL,
-        balance INTEGER NOT NULL DEFAULT ${STARTING_BALANCE},
+        balance INTEGER NOT NULL DEFAULT ${DEFAULT_SETTINGS.startingBalance},
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -97,6 +100,9 @@ function getOrCreateUser(userId, username) {
 
 
     // New player
+    const startingBalance =
+        getSettings().startingBalance;
+
     db.prepare(`
         INSERT INTO users (
             twitch_user_id,
@@ -107,11 +113,11 @@ function getOrCreateUser(userId, username) {
     `).run(
         userId,
         username,
-        STARTING_BALANCE
+        startingBalance
     );
 
     console.log(
-        `New player created: ${username} (${STARTING_BALANCE} chips)`
+        `New player created: ${username} (${startingBalance} chips)`
     );
 
     return db
@@ -261,7 +267,7 @@ function getLastRouletteResult(userId) {
                 resolved_at
             FROM roulette_results
             WHERE twitch_user_id = ?
-            ORDER BY id DESC
+            ORDER BY resolved_at DESC, id DESC
             LIMIT 1
         `)
         .get(userId);
@@ -295,6 +301,52 @@ function getLastRouletteResult(userId) {
 }
 
 
+// ----------------------------------------------------
+// Return the next round ID that has never been used in
+// the stored result history. Round IDs must survive app
+// restarts because roulette_results is unique on
+// (round_id, twitch_user_id).
+// ----------------------------------------------------
+
+function getNextRouletteRoundId() {
+    const row = db
+        .prepare(`
+            SELECT COALESCE(MAX(round_id), 0) AS max_round_id
+            FROM roulette_results
+            WHERE round_id > 0
+        `)
+        .get();
+
+    return Number(row?.max_round_id || 0) + 1;
+}
+
+
+// ----------------------------------------------------
+// Current-chip leaderboard
+// ----------------------------------------------------
+
+function getLeaderboard(limit = 5) {
+    const safeLimit = Math.max(
+        1,
+        Math.min(25, Number.isInteger(limit) ? limit : 5)
+    );
+
+    return db
+        .prepare(`
+            SELECT
+                twitch_user_id,
+                username,
+                balance
+            FROM users
+            ORDER BY
+                balance DESC,
+                username COLLATE NOCASE ASC
+            LIMIT ?
+        `)
+        .all(safeLimit);
+}
+
+
 module.exports = {
     getOrCreateUser,
     getBalance,
@@ -302,5 +354,6 @@ module.exports = {
     setBalance,
     saveRouletteResult,
     getLastRouletteResult,
-    STARTING_BALANCE
+    getNextRouletteRoundId,
+    getLeaderboard
 };

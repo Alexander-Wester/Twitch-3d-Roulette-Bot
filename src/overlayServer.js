@@ -64,7 +64,11 @@ const server = http.createServer(
                         200,
                         {
                             "Content-Type":
-                                "text/javascript"
+                                "text/javascript",
+                            "Cache-Control":
+                                "no-store, no-cache, must-revalidate",
+                            "Pragma": "no-cache",
+                            "Expires": "0"
                         }
                     );
 
@@ -117,7 +121,11 @@ const server = http.createServer(
                         200,
                         {
                             "Content-Type":
-                                "text/javascript"
+                                "text/javascript",
+                            "Cache-Control":
+                                "no-store, no-cache, must-revalidate",
+                            "Pragma": "no-cache",
+                            "Expires": "0"
                         }
                     );
 
@@ -168,7 +176,11 @@ const server = http.createServer(
                         200,
                         {
                             "Content-Type":
-                                "text/javascript"
+                                "text/javascript",
+                            "Cache-Control":
+                                "no-store, no-cache, must-revalidate",
+                            "Pragma": "no-cache",
+                            "Expires": "0"
                         }
                     );
 
@@ -220,7 +232,11 @@ const server = http.createServer(
                         200,
                         {
                             "Content-Type":
-                                "text/javascript"
+                                "text/javascript",
+                            "Cache-Control":
+                                "no-store, no-cache, must-revalidate",
+                            "Pragma": "no-cache",
+                            "Expires": "0"
                         }
                     );
 
@@ -323,6 +339,8 @@ const wss = new WebSocketServer({
 
 let overlayMessageHandler = null;
 let overlayStateProvider = null;
+let serverStarted = false;
+const readyClients = new Set();
 
 
 function setOverlayMessageHandler(handler) {
@@ -386,6 +404,21 @@ wss.on(
                         rawData.toString()
                     );
 
+                    if (data?.type === "overlayReady") {
+                        const wasReady =
+                            readyClients.has(socket);
+
+                        readyClients.add(socket);
+
+                        if (!wasReady) {
+                            console.log(
+                                "Overlay physics ready."
+                            );
+                        }
+
+                        return;
+                    }
+
                     if (overlayMessageHandler) {
                         await overlayMessageHandler(
                             data,
@@ -405,6 +438,7 @@ wss.on(
         socket.on(
             "close",
             () => {
+                readyClients.delete(socket);
 
                 console.log(
                     "Overlay disconnected."
@@ -420,17 +454,41 @@ wss.on(
 // ----------------------------------------------------
 
 function startOverlayServer() {
+    if (serverStarted) {
+        return;
+    }
+
+    serverStarted = true;
 
     server.listen(
         PORT,
         () => {
-
             console.log(
                 `Overlay server running: http://localhost:${PORT}/overlay`
             );
-
         }
     );
+
+    server.once(
+        "error",
+        error => {
+            serverStarted = false;
+            console.error(
+                "Overlay server error:",
+                error.message
+            );
+        }
+    );
+}
+
+
+function getOverlayStatus() {
+    return {
+        serverStarted,
+        port: PORT,
+        clientCount: wss.clients.size,
+        readyClientCount: readyClients.size
+    };
 }
 
 
@@ -463,5 +521,6 @@ module.exports = {
     startOverlayServer,
     broadcastOverlayMessage,
     setOverlayMessageHandler,
-    setOverlayStateProvider
+    setOverlayStateProvider,
+    getOverlayStatus
 };

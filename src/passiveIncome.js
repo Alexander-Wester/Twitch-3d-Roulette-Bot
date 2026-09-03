@@ -2,16 +2,16 @@ const {
     changeBalance
 } = require("./database");
 
+const {
+    getSettings,
+    onSettingsChanged
+} = require("./settings");
 
-// ----------------------------------------------------
-// Passive income settings
-// ----------------------------------------------------
-
-const PASSIVE_INCOME_AMOUNT = 200;
-const PASSIVE_INCOME_INTERVAL_MS = 5 * 60 * 1000;
 
 let passiveIncomeTimer = null;
 let passiveIncomeCheckRunning = false;
+let passiveIncomeOptions = null;
+let unsubscribeSettings = null;
 
 
 async function resolveAccessToken(options) {
@@ -86,12 +86,15 @@ async function getCurrentChatters({
 
 // ----------------------------------------------------
 // Award one passive-income tick.
-//
-// getAccessToken() is supported so a long-running bot always
-// uses the newest automatically-refreshed Twitch access token.
 // ----------------------------------------------------
 
 async function awardPassiveIncome(options) {
+    const settings = getSettings();
+
+    if (!settings.passiveIncomeEnabled) {
+        return;
+    }
+
     if (passiveIncomeCheckRunning) {
         console.warn(
             "Skipping passive income tick because the previous check is still running."
@@ -107,7 +110,9 @@ async function awardPassiveIncome(options) {
             await resolveAccessToken(options);
 
         if (!accessToken) {
-            throw new Error("No Twitch access token is available for passive income.");
+            throw new Error(
+                "No Twitch access token is available for passive income."
+            );
         }
 
         const chatters =
@@ -128,14 +133,14 @@ async function awardPassiveIncome(options) {
             changeBalance(
                 chatter.user_id,
                 chatter.user_name,
-                PASSIVE_INCOME_AMOUNT
+                settings.passiveIncomeAmount
             );
 
             paidCount++;
         }
 
         console.log(
-            `[Passive Income] +${PASSIVE_INCOME_AMOUNT} chips -> ` +
+            `[Passive Income] +${settings.passiveIncomeAmount} chips -> ` +
             `${paidCount} chatter${paidCount === 1 ? "" : "s"}.`
         );
 
@@ -161,28 +166,72 @@ async function awardPassiveIncome(options) {
 }
 
 
-// ----------------------------------------------------
-// Start passive income.
-// ----------------------------------------------------
-
-function startPassiveIncome(options) {
+function configurePassiveIncomeTimer() {
     if (passiveIncomeTimer) {
         clearInterval(passiveIncomeTimer);
+        passiveIncomeTimer = null;
     }
 
+    if (!passiveIncomeOptions) {
+        return;
+    }
+
+    const settings = getSettings();
+
+    if (!settings.passiveIncomeEnabled) {
+        console.log(
+            "[Passive Income] Disabled in settings."
+        );
+        return;
+    }
+
+    const intervalMs =
+        settings.passiveIncomeMinutes * 60 * 1000;
+
     console.log(
-        `[Passive Income] Enabled: +${PASSIVE_INCOME_AMOUNT} chips ` +
-        `every ${PASSIVE_INCOME_INTERVAL_MS / 60000} minutes in chat.`
+        `[Passive Income] Enabled: +${settings.passiveIncomeAmount} chips ` +
+        `every ${settings.passiveIncomeMinutes} minutes in chat.`
     );
 
     passiveIncomeTimer = setInterval(
         () => {
-            awardPassiveIncome(options);
+            awardPassiveIncome(
+                passiveIncomeOptions
+            );
         },
-        PASSIVE_INCOME_INTERVAL_MS
+        intervalMs
     );
 
     passiveIncomeTimer.unref?.();
+}
+
+
+// ----------------------------------------------------
+// Start passive income and keep its timer synchronized
+// with Settings-page changes.
+// ----------------------------------------------------
+
+function startPassiveIncome(options) {
+    passiveIncomeOptions = options;
+
+    unsubscribeSettings?.();
+
+    unsubscribeSettings =
+        onSettingsChanged(
+            (_settings, changedKeys) => {
+                if (
+                    changedKeys.some(key => [
+                        "passiveIncomeEnabled",
+                        "passiveIncomeAmount",
+                        "passiveIncomeMinutes"
+                    ].includes(key))
+                ) {
+                    configurePassiveIncomeTimer();
+                }
+            }
+        );
+
+    configurePassiveIncomeTimer();
 
     return passiveIncomeTimer;
 }
@@ -191,7 +240,5 @@ function startPassiveIncome(options) {
 module.exports = {
     startPassiveIncome,
     awardPassiveIncome,
-    getCurrentChatters,
-    PASSIVE_INCOME_AMOUNT,
-    PASSIVE_INCOME_INTERVAL_MS
+    getCurrentChatters
 };

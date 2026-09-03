@@ -2,41 +2,59 @@ const {
     getRandomIdleGambleLine
 } = require("./idleGambleLines");
 
+const {
+    getSettings,
+    onSettingsChanged
+} = require("./settings");
 
-// ----------------------------------------------------
-// Idle reminder configuration
-//
-// Change this one value if you ever want a different
-// delay. 20 * 60 * 1000 = 20 minutes.
-// ----------------------------------------------------
-
-const IDLE_GAMBLE_REMINDER_MS =
-    20 * 60 * 1000;
 
 let reminderTimer = null;
 let sendChatMessageFn = null;
 let isRouletteIdleFn = null;
+let unsubscribeSettings = null;
+
+
+function clearReminderTimer() {
+    if (reminderTimer) {
+        clearTimeout(reminderTimer);
+        reminderTimer = null;
+    }
+}
 
 
 // ----------------------------------------------------
-// Schedule the next reminder
+// Schedule the next reminder using the current settings.
 // ----------------------------------------------------
 
 function scheduleNextReminder() {
-    if (reminderTimer) {
-        clearTimeout(reminderTimer);
+    clearReminderTimer();
+
+    const settings = getSettings();
+
+    if (
+        !settings.idleReminderEnabled ||
+        !sendChatMessageFn
+    ) {
+        return;
     }
+
+    const delayMs =
+        settings.idleReminderMinutes * 60 * 1000;
 
     reminderTimer = setTimeout(
         async () => {
             reminderTimer = null;
 
             try {
+                const currentSettings =
+                    getSettings();
+
                 const rouletteIsIdle =
                     !isRouletteIdleFn ||
                     isRouletteIdleFn();
 
                 if (
+                    currentSettings.idleReminderEnabled &&
                     rouletteIsIdle &&
                     sendChatMessageFn
                 ) {
@@ -59,17 +77,20 @@ function scheduleNextReminder() {
                 );
             }
 
-            // If nobody starts another round, keep reminding
-            // chat once every 20 minutes of continued inactivity.
+            // Continued inactivity schedules another reminder using
+            // whatever interval is currently selected in Settings.
             scheduleNextReminder();
         },
-        IDLE_GAMBLE_REMINDER_MS
+        delayMs
     );
+
+    reminderTimer.unref?.();
 }
 
 
 // ----------------------------------------------------
-// Start the idle reminder system
+// Start the idle reminder system and keep it synchronized
+// with Settings-page changes.
 // ----------------------------------------------------
 
 function startIdleGambleReminder({
@@ -82,20 +103,44 @@ function startIdleGambleReminder({
     isRouletteIdleFn =
         isRouletteIdle;
 
+    unsubscribeSettings?.();
+
+    unsubscribeSettings =
+        onSettingsChanged(
+            (_settings, changedKeys) => {
+                if (
+                    changedKeys.some(key => [
+                        "idleReminderEnabled",
+                        "idleReminderMinutes"
+                    ].includes(key))
+                ) {
+                    scheduleNextReminder();
+
+                    const settings = getSettings();
+
+                    console.log(
+                        settings.idleReminderEnabled
+                            ? `[Idle Roulette Reminder] Updated — ${settings.idleReminderMinutes} minute idle timer.`
+                            : "[Idle Roulette Reminder] Disabled in settings."
+                    );
+                }
+            }
+        );
+
     scheduleNextReminder();
 
+    const settings = getSettings();
+
     console.log(
-        "[Idle Roulette Reminder] " +
-        "Started — 20 minute idle timer."
+        settings.idleReminderEnabled
+            ? `[Idle Roulette Reminder] Started — ${settings.idleReminderMinutes} minute idle timer.`
+            : "[Idle Roulette Reminder] Disabled in settings."
     );
 }
 
 
 // ----------------------------------------------------
 // A NEW roulette round has started.
-//
-// Calling this cancels the old countdown and gives the
-// wheel a fresh 20 minutes before another reminder.
 // ----------------------------------------------------
 
 function resetIdleGambleReminder() {
@@ -105,15 +150,16 @@ function resetIdleGambleReminder() {
 
     scheduleNextReminder();
 
-    console.log(
-        "[Idle Roulette Reminder] " +
-        "Round started — timer reset."
-    );
+    if (getSettings().idleReminderEnabled) {
+        console.log(
+            "[Idle Roulette Reminder] " +
+            "Round started — timer reset."
+        );
+    }
 }
 
 
 module.exports = {
     startIdleGambleReminder,
-    resetIdleGambleReminder,
-    IDLE_GAMBLE_REMINDER_MS
+    resetIdleGambleReminder
 };

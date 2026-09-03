@@ -19,8 +19,7 @@ const {
 const {
     handleOverlayMessage,
     getOverlayStateMessages,
-    getRouletteState,
-    ANNOUNCE_ALL_RESULTS
+    getRouletteState
 } = require("./roundManager");
 
 const {
@@ -32,6 +31,10 @@ const {
     TWITCH_CLIENT_ID: CLIENT_ID,
     hasTwitchClientId
 } = require("./appConfig");
+
+const {
+    getSettings
+} = require("./settings");
 const EVENTSUB_URL = "wss://eventsub.wss.twitch.tv/ws";
 const AUTH_MAINTENANCE_MS = 60 * 60 * 1000;
 
@@ -479,7 +482,7 @@ async function startBot(options = {}) {
     console.log("========================================");
     console.log(
         `Announce all roulette results: ` +
-        `${ANNOUNCE_ALL_RESULTS ? "ON" : "OFF"}`
+        `${getSettings().announceAllResults ? "ON" : "OFF"}`
     );
     console.log("========================================\n");
 
@@ -526,6 +529,30 @@ async function startBot(options = {}) {
 }
 
 
+async function reconnectTwitch() {
+    if (!started) {
+        throw new Error(
+            "RouletteBot is not running yet. Connect both Twitch accounts first."
+        );
+    }
+
+    emitStatus("connecting", {
+        message: "Reconnecting to Twitch..."
+    });
+
+    await loadCurrentAuthorizations();
+    websocketSessionId = null;
+
+    connectWebSocket();
+
+    console.log(
+        "[Debug] Manual Twitch reconnect requested."
+    );
+
+    return getBotStatus();
+}
+
+
 function getBotStatus() {
     return {
         started,
@@ -542,7 +569,8 @@ function getBotStatus() {
 module.exports = {
     startBot,
     getBotStatus,
-    sendChatMessage
+    sendChatMessage,
+    reconnectTwitch
 };
 
 

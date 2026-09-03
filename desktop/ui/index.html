@@ -27,205 +27,641 @@
         </header>
 
         <nav class="tabs" aria-label="Application sections">
-            <button class="tab active">Setup</button>
-            <button class="tab disabled" disabled>Settings <span>Coming next</span></button>
+            <button
+                id="setupTab"
+                class="tab active"
+                data-page="setup"
+            >Setup</button>
+            <button
+                id="settingsTab"
+                class="tab"
+                data-page="settings"
+            >Settings</button>
+            <button
+                id="logsTab"
+                class="tab"
+                data-page="logs"
+            >Logs</button>
+            <button
+                id="debugTab"
+                class="tab"
+                data-page="debug"
+            >Debug</button>
         </nav>
 
         <main>
-            <section class="intro">
-                <h2>First-time setup</h2>
-                <p>
-                    Connect the Twitch channel where roulette will run, then connect
-                    the Twitch account that should speak in chat. After both are connected,
-                    RouletteBot starts automatically.
+            <section id="setupPage" class="app-page">
+                <section class="intro">
+                    <h2>First-time setup</h2>
+                    <p>
+                        Connect the Twitch channel where roulette will run, then connect
+                        the Twitch account that should speak in chat. After both are connected,
+                        RouletteBot starts automatically.
+                    </p>
+                </section>
+
+                <div
+                    id="clientIdWarning"
+                    class="warning hidden"
+                >
+                    <strong>Twitch Client ID missing.</strong>
+                    The developer must set it once in <code>src/appConfig.js</code> before distributing RouletteBot.
+                </div>
+
+                <section class="setup-grid">
+                    <article class="card account-card">
+                        <div class="card-heading">
+                            <div>
+                                <div class="step-number">1</div>
+                                <div>
+                                    <h3>Broadcaster Account</h3>
+                                    <p>The main Twitch channel where roulette will run.</p>
+                                </div>
+                            </div>
+                            <span
+                                id="broadcasterStatusPill"
+                                class="pill disconnected"
+                            >Not connected</span>
+                        </div>
+
+                        <div class="account-display">
+                            <div
+                                id="broadcasterAvatar"
+                                class="account-avatar"
+                            >B</div>
+                            <div>
+                                <div class="muted-label">Connected channel</div>
+                                <div
+                                    id="broadcasterLogin"
+                                    class="account-name"
+                                >No account connected</div>
+                            </div>
+                        </div>
+
+                        <button
+                            id="connectBroadcaster"
+                            class="primary-button"
+                        >
+                            Connect Broadcaster
+                        </button>
+
+                        <p class="fine-print">
+                            Sign into Twitch using the streamer's main channel account.
+                        </p>
+                    </article>
+
+                    <article class="card account-card">
+                        <div class="card-heading">
+                            <div>
+                                <div class="step-number">2</div>
+                                <div>
+                                    <h3>Bot Account</h3>
+                                    <p>The Twitch account that reads and replies in chat.</p>
+                                </div>
+                            </div>
+                            <span
+                                id="botStatusPill"
+                                class="pill disconnected"
+                            >Not connected</span>
+                        </div>
+
+                        <div class="account-display">
+                            <div
+                                id="botAvatar"
+                                class="account-avatar"
+                            >R</div>
+                            <div>
+                                <div class="muted-label">Chat account</div>
+                                <div
+                                    id="botLogin"
+                                    class="account-name"
+                                >No account connected</div>
+                            </div>
+                        </div>
+
+                        <button
+                            id="connectBot"
+                            class="primary-button"
+                        >
+                            Connect Bot Account
+                        </button>
+
+                        <p class="fine-print">
+                            Make sure Twitch is authorizing the bot account, not the broadcaster again.
+                        </p>
+                    </article>
+                </section>
+
+                <section
+                    id="authProgress"
+                    class="auth-progress hidden"
+                >
+                    <div class="spinner"></div>
+                    <div>
+                        <strong id="authProgressTitle">Waiting for Twitch authorization</strong>
+                        <p id="authProgressText">
+                            A Twitch page has been opened in your browser.
+                        </p>
+                        <div class="device-code-line">
+                            Device code:
+                            <code id="deviceCode">--------</code>
+                        </div>
+                    </div>
+                </section>
+
+                <article class="card obs-card">
+                    <div class="card-heading obs-heading">
+                        <div>
+                            <div class="step-number">3</div>
+                            <div>
+                                <h3>OBS Overlay</h3>
+                                <p>Add the roulette wheel as a Browser Source in OBS.</p>
+                            </div>
+                        </div>
+                        <span class="pill local">Local</span>
+                    </div>
+
+                    <div class="overlay-url-row">
+                        <div class="url-box">
+                            <span class="url-label">Browser Source URL</span>
+                            <code id="overlayUrl">http://localhost:3000/overlay</code>
+                        </div>
+                        <button
+                            id="copyOverlayUrl"
+                            class="secondary-button"
+                        >Copy URL</button>
+                    </div>
+
+                    <div class="instructions-grid">
+                        <div>
+                            <h4>OBS setup</h4>
+                            <ol>
+                                <li>In OBS, add a new <strong>Browser Source</strong>.</li>
+                                <li>Paste the URL shown above.</li>
+                                <li>Set width to <strong>1920</strong> and height to <strong>1080</strong>.</li>
+                                <li>Keep RouletteBot running while you stream.</li>
+                            </ol>
+                        </div>
+
+                        <div class="mod-panel">
+                            <h4>Recommended: Mod the bot</h4>
+                            <p>
+                                Passive income reads the channel's chatter list, so the bot
+                                account should be a moderator.
+                            </p>
+                            <div class="mod-command">
+                                <code id="modCommand">/mod YourBotName</code>
+                                <button
+                                    id="copyModCommand"
+                                    class="small-button"
+                                    disabled
+                                >Copy</button>
+                            </div>
+                        </div>
+                    </div>
+                </article>
+
+                <section class="status-panel">
+                    <h3>Application status</h3>
+
+                    <div class="status-list">
+                        <div class="status-row">
+                            <span>Broadcaster authorization</span>
+                            <span id="broadcasterStatusText" class="status-value">Not connected</span>
+                        </div>
+
+                        <div class="status-row">
+                            <span>Bot authorization</span>
+                            <span id="botStatusText" class="status-value">Not connected</span>
+                        </div>
+
+                        <div class="status-row">
+                            <span>RouletteBot</span>
+                            <span id="rouletteStatusText" class="status-value">Waiting for setup</span>
+                        </div>
+
+                        <div class="status-row">
+                            <span>OBS overlay</span>
+                            <span class="status-value">http://localhost:3000/overlay</span>
+                        </div>
+                    </div>
+                </section>
+            </section>
+
+            <section id="settingsPage" class="app-page hidden">
+                <section class="intro settings-intro">
+                    <div>
+                        <h2>Roulette settings</h2>
+                        <p>
+                            Changes are saved automatically and are used by the running bot.
+                            Existing viewer balances are never changed by editing Starting Chips.
+                        </p>
+                    </div>
+                    <div id="settingsSaveState" class="save-state saved">
+                        <span class="save-dot"></span>
+                        <span>Saved</span>
+                    </div>
+                </section>
+
+                <div id="settingsError" class="warning hidden"></div>
+
+                <section class="settings-grid">
+                    <article class="card settings-card">
+                        <div class="settings-card-title">
+                            <div class="settings-icon">$</div>
+                            <div>
+                                <h3>Economy</h3>
+                                <p>Starting funds, betting limits, and passive chip income.</p>
+                            </div>
+                        </div>
+
+                        <div class="setting-row">
+                            <div class="setting-copy">
+                                <label for="startingBalance">Starting chips</label>
+                                <p>Applied only when a brand-new viewer gets a balance.</p>
+                            </div>
+                            <div class="number-control">
+                                <input
+                                    id="startingBalance"
+                                    class="setting-input"
+                                    type="number"
+                                    min="0"
+                                    max="1000000000"
+                                    step="1"
+                                >
+                                <span>chips</span>
+                            </div>
+                        </div>
+
+                        <div class="setting-row">
+                            <div class="setting-copy">
+                                <label for="minimumBet">Minimum bet</label>
+                                <p>The smallest wager accepted by <code>!gamble</code>.</p>
+                            </div>
+                            <div class="number-control">
+                                <input
+                                    id="minimumBet"
+                                    class="setting-input"
+                                    type="number"
+                                    min="1"
+                                    max="1000000000"
+                                    step="1"
+                                >
+                                <span>chips</span>
+                            </div>
+                        </div>
+
+                        <div class="setting-row toggle-row">
+                            <div class="setting-copy">
+                                <label for="passiveIncomeEnabled">Passive income</label>
+                                <p>Award chips to viewers currently connected to Twitch chat.</p>
+                            </div>
+                            <label class="switch">
+                                <input id="passiveIncomeEnabled" type="checkbox">
+                                <span class="switch-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="setting-pair indented-setting">
+                            <div>
+                                <label for="passiveIncomeAmount">Award</label>
+                                <div class="number-control compact">
+                                    <input
+                                        id="passiveIncomeAmount"
+                                        class="setting-input"
+                                        type="number"
+                                        min="1"
+                                        max="1000000000"
+                                        step="1"
+                                    >
+                                    <span>chips</span>
+                                </div>
+                            </div>
+                            <div>
+                                <label for="passiveIncomeMinutes">Every</label>
+                                <div class="number-control compact">
+                                    <input
+                                        id="passiveIncomeMinutes"
+                                        class="setting-input"
+                                        type="number"
+                                        min="1"
+                                        max="1440"
+                                        step="1"
+                                    >
+                                    <span>minutes</span>
+                                </div>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="card settings-card">
+                        <div class="settings-card-title">
+                            <div class="settings-icon">⏱</div>
+                            <div>
+                                <h3>Round timing</h3>
+                                <p>Control how long players can bet and how often the wheel can run.</p>
+                            </div>
+                        </div>
+
+                        <div class="setting-pair">
+                            <div>
+                                <label for="bettingTimeMinSeconds">Betting minimum</label>
+                                <div class="number-control compact">
+                                    <input
+                                        id="bettingTimeMinSeconds"
+                                        class="setting-input"
+                                        type="number"
+                                        min="5"
+                                        max="120"
+                                        step="1"
+                                    >
+                                    <span>seconds</span>
+                                </div>
+                            </div>
+                            <div>
+                                <label for="bettingTimeMaxSeconds">Betting maximum</label>
+                                <div class="number-control compact">
+                                    <input
+                                        id="bettingTimeMaxSeconds"
+                                        class="setting-input"
+                                        type="number"
+                                        min="5"
+                                        max="120"
+                                        step="1"
+                                    >
+                                    <span>seconds</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <p class="settings-note">
+                            Each new round chooses a random betting time inside this range.
+                            A round already in progress keeps the timing it started with.
+                        </p>
+
+                        <div class="setting-row">
+                            <div class="setting-copy">
+                                <label for="cooldownMinutes">Cooldown after a spin</label>
+                                <p>Use 0 if you want the next round available immediately.</p>
+                            </div>
+                            <div class="number-control">
+                                <input
+                                    id="cooldownMinutes"
+                                    class="setting-input"
+                                    type="number"
+                                    min="0"
+                                    max="1440"
+                                    step="1"
+                                >
+                                <span>minutes</span>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="card settings-card settings-card-wide">
+                        <div class="settings-card-title">
+                            <div class="settings-icon">💬</div>
+                            <div>
+                                <h3>Chat</h3>
+                                <p>Control idle reminders and how much result detail RouletteBot posts.</p>
+                            </div>
+                        </div>
+
+                        <div class="setting-row toggle-row">
+                            <div class="setting-copy">
+                                <label for="idleReminderEnabled">Idle gamble reminders</label>
+                                <p>Post one of your idle quips when roulette has been quiet.</p>
+                            </div>
+                            <label class="switch">
+                                <input id="idleReminderEnabled" type="checkbox">
+                                <span class="switch-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="setting-row indented-setting">
+                            <div class="setting-copy">
+                                <label for="idleReminderMinutes">Reminder interval</label>
+                                <p>If roulette stays idle, the timer repeats using this interval.</p>
+                            </div>
+                            <div class="number-control">
+                                <input
+                                    id="idleReminderMinutes"
+                                    class="setting-input"
+                                    type="number"
+                                    min="1"
+                                    max="1440"
+                                    step="1"
+                                >
+                                <span>minutes</span>
+                            </div>
+                        </div>
+
+                        <div class="setting-row toggle-row">
+                            <div class="setting-copy">
+                                <label for="announceAllResults">Show every user's result</label>
+                                <p>
+                                    When off, chat gets the biggest winner and biggest loser instead.
+                                    Viewers can still use <code>!result</code> for their own result.
+                                </p>
+                            </div>
+                            <label class="switch">
+                                <input id="announceAllResults" type="checkbox">
+                                <span class="switch-slider"></span>
+                            </label>
+                        </div>
+                    </article>
+                </section>
+
+                <section class="settings-footer-card">
+                    <div>
+                        <strong>Restore default settings</strong>
+                        <p>
+                            Resets these options to the shipped defaults. Twitch logins and viewer balances are not touched.
+                        </p>
+                    </div>
+                    <button
+                        id="restoreDefaults"
+                        class="danger-outline-button"
+                    >Restore Defaults</button>
+                </section>
+            </section>
+
+            <section id="logsPage" class="app-page hidden">
+                <section class="intro page-heading-row">
+                    <div>
+                        <h2>Application logs</h2>
+                        <p>
+                            Live backend, Twitch, roulette, and overlay-server activity. Logs are also
+                            written to daily files in the app data folder so they survive restarts.
+                        </p>
+                    </div>
+                    <span class="pill local">Live</span>
+                </section>
+
+                <article class="card logs-card">
+                    <div class="log-toolbar">
+                        <div class="log-filter-group" role="group" aria-label="Log level filter">
+                            <button class="log-filter active" data-log-level="all">All</button>
+                            <button class="log-filter" data-log-level="info">Info</button>
+                            <button class="log-filter" data-log-level="warn">Warnings</button>
+                            <button class="log-filter" data-log-level="error">Errors</button>
+                        </div>
+
+                        <div class="log-search-wrap">
+                            <input
+                                id="logSearch"
+                                class="text-input"
+                                type="search"
+                                placeholder="Search logs..."
+                                autocomplete="off"
+                            >
+                        </div>
+                    </div>
+
+                    <div class="log-actions-row">
+                        <label class="check-option">
+                            <input id="logAutoScroll" type="checkbox" checked>
+                            <span>Auto-scroll</span>
+                        </label>
+
+                        <div class="button-row compact-buttons">
+                            <button id="clearLogView" class="small-button">Clear View</button>
+                            <button id="copyVisibleLogs" class="small-button">Copy Visible</button>
+                            <button id="openLogsFolder" class="secondary-button">Open Log Folder</button>
+                        </div>
+                    </div>
+
+                    <div id="logViewer" class="log-viewer" aria-live="polite"></div>
+                    <div id="logEmptyState" class="log-empty hidden">No log entries match the current filter.</div>
+                </article>
+
+                <p class="page-note">
+                    Sensitive OAuth token values are redacted before log lines are written to disk.
+                    “Clear View” only clears this window; it does not delete the saved log file.
                 </p>
             </section>
 
-            <div
-                id="clientIdWarning"
-                class="warning hidden"
-            >
-                <strong>Twitch Client ID missing.</strong>
-                The developer must set it once in <code>src/appConfig.js</code> before distributing RouletteBot.
-            </div>
-
-            <section class="setup-grid">
-                <article class="card account-card">
-                    <div class="card-heading">
-                        <div>
-                            <div class="step-number">1</div>
-                            <div>
-                                <h3>Broadcaster Account</h3>
-                                <p>The main Twitch channel where roulette will run.</p>
-                            </div>
-                        </div>
-                        <span
-                            id="broadcasterStatusPill"
-                            class="pill disconnected"
-                        >Not connected</span>
-                    </div>
-
-                    <div class="account-display">
-                        <div
-                            id="broadcasterAvatar"
-                            class="account-avatar"
-                        >B</div>
-                        <div>
-                            <div class="muted-label">Connected channel</div>
-                            <div
-                                id="broadcasterLogin"
-                                class="account-name"
-                            >No account connected</div>
-                        </div>
-                    </div>
-
-                    <button
-                        id="connectBroadcaster"
-                        class="primary-button"
-                    >
-                        Connect Broadcaster
-                    </button>
-
-                    <p class="fine-print">
-                        Sign into Twitch using the streamer's main channel account.
-                    </p>
-                </article>
-
-                <article class="card account-card">
-                    <div class="card-heading">
-                        <div>
-                            <div class="step-number">2</div>
-                            <div>
-                                <h3>Bot Account</h3>
-                                <p>The Twitch account that reads and replies in chat.</p>
-                            </div>
-                        </div>
-                        <span
-                            id="botStatusPill"
-                            class="pill disconnected"
-                        >Not connected</span>
-                    </div>
-
-                    <div class="account-display">
-                        <div
-                            id="botAvatar"
-                            class="account-avatar"
-                        >R</div>
-                        <div>
-                            <div class="muted-label">Chat account</div>
-                            <div
-                                id="botLogin"
-                                class="account-name"
-                            >No account connected</div>
-                        </div>
-                    </div>
-
-                    <button
-                        id="connectBot"
-                        class="primary-button"
-                    >
-                        Connect Bot Account
-                    </button>
-
-                    <p class="fine-print">
-                        Make sure Twitch is authorizing the bot account, not the broadcaster again.
-                    </p>
-                </article>
-            </section>
-
-            <section
-                id="authProgress"
-                class="auth-progress hidden"
-            >
-                <div class="spinner"></div>
-                <div>
-                    <strong id="authProgressTitle">Waiting for Twitch authorization</strong>
-                    <p id="authProgressText">
-                        A Twitch page has been opened in your browser.
-                    </p>
-                    <div class="device-code-line">
-                        Device code:
-                        <code id="deviceCode">--------</code>
-                    </div>
-                </div>
-            </section>
-
-            <article class="card obs-card">
-                <div class="card-heading obs-heading">
+            <section id="debugPage" class="app-page hidden">
+                <section class="intro page-heading-row">
                     <div>
-                        <div class="step-number">3</div>
-                        <div>
-                            <h3>OBS Overlay</h3>
-                            <p>Add the roulette wheel as a Browser Source in OBS.</p>
-                        </div>
-                    </div>
-                    <span class="pill local">Local</span>
-                </div>
-
-                <div class="overlay-url-row">
-                    <div class="url-box">
-                        <span class="url-label">Browser Source URL</span>
-                        <code id="overlayUrl">http://localhost:3000/overlay</code>
-                    </div>
-                    <button
-                        id="copyOverlayUrl"
-                        class="secondary-button"
-                    >Copy URL</button>
-                </div>
-
-                <div class="instructions-grid">
-                    <div>
-                        <h4>OBS setup</h4>
-                        <ol>
-                            <li>In OBS, add a new <strong>Browser Source</strong>.</li>
-                            <li>Paste the URL shown above.</li>
-                            <li>Set width to <strong>1920</strong> and height to <strong>1080</strong>.</li>
-                            <li>Keep RouletteBot running while you stream.</li>
-                        </ol>
-                    </div>
-
-                    <div class="mod-panel">
-                        <h4>Recommended: Mod the bot</h4>
+                        <h2>Debug & recovery</h2>
                         <p>
-                            Passive income reads the channel's chatter list, so the bot
-                            account should be a moderator.
+                            Diagnostics and manual recovery tools for testing RouletteBot without editing source files.
                         </p>
-                        <div class="mod-command">
-                            <code id="modCommand">/mod YourBotName</code>
-                            <button
-                                id="copyModCommand"
-                                class="small-button"
-                                disabled
-                            >Copy</button>
+                    </div>
+                    <button id="refreshDebugState" class="secondary-button">Refresh</button>
+                </section>
+
+                <div class="warning debug-warning">
+                    <strong>These controls act on the running bot.</strong>
+                    The live-chat test posts to Twitch, and Cancel Active Round stops a real round if one is running.
+                </div>
+
+                <section class="debug-status-grid">
+                    <article class="mini-status-card">
+                        <span class="mini-status-label">Twitch</span>
+                        <strong id="debugTwitchStatus">Loading...</strong>
+                        <small id="debugTwitchDetail">—</small>
+                    </article>
+                    <article class="mini-status-card">
+                        <span class="mini-status-label">Roulette</span>
+                        <strong id="debugRouletteStatus">Loading...</strong>
+                        <small id="debugRouletteDetail">—</small>
+                    </article>
+                    <article class="mini-status-card">
+                        <span class="mini-status-label">OBS Overlay</span>
+                        <strong id="debugOverlayStatus">Loading...</strong>
+                        <small id="debugOverlayDetail">—</small>
+                    </article>
+                    <article class="mini-status-card">
+                        <span class="mini-status-label">Build</span>
+                        <strong id="debugBuildStatus">Loading...</strong>
+                        <small id="debugBuildDetail">—</small>
+                    </article>
+                </section>
+
+                <section class="debug-grid">
+                    <article class="card debug-card">
+                        <div class="settings-card-title">
+                            <div class="settings-icon">↻</div>
+                            <div>
+                                <h3>Twitch connection</h3>
+                                <p>Test chat output or rebuild the EventSub connection.</p>
+                            </div>
                         </div>
-                    </div>
-                </div>
-            </article>
 
-            <section class="status-panel">
-                <h3>Application status</h3>
+                        <div class="debug-action-row">
+                            <button id="reconnectTwitch" class="secondary-button">Reconnect Twitch</button>
+                        </div>
 
-                <div class="status-list">
-                    <div class="status-row">
-                        <span>Broadcaster authorization</span>
-                        <span id="broadcasterStatusText" class="status-value">Not connected</span>
-                    </div>
+                        <label class="debug-label" for="debugChatMessage">Live chat test message</label>
+                        <div class="inline-action">
+                            <input
+                                id="debugChatMessage"
+                                class="text-input"
+                                type="text"
+                                maxlength="450"
+                                value="🎰 RouletteBot debug test: chat connection is working."
+                            >
+                            <button id="sendDebugChat" class="primary-button">Send to Chat</button>
+                        </div>
+                        <p class="fine-print">This button sends a real message using the connected bot account.</p>
+                    </article>
 
-                    <div class="status-row">
-                        <span>Bot authorization</span>
-                        <span id="botStatusText" class="status-value">Not connected</span>
-                    </div>
+                    <article class="card debug-card">
+                        <div class="settings-card-title">
+                            <div class="settings-icon">◉</div>
+                            <div>
+                                <h3>OBS overlay test</h3>
+                                <p>Exercise the Browser Source without creating bets or payouts.</p>
+                            </div>
+                        </div>
 
-                    <div class="status-row">
-                        <span>RouletteBot</span>
-                        <span id="rouletteStatusText" class="status-value">Waiting for setup</span>
-                    </div>
+                        <div class="button-row debug-button-row">
+                            <button id="debugShowOverlay" class="secondary-button">Show Table</button>
+                            <button id="debugHideOverlay" class="secondary-button">Hide Table</button>
+                            <button id="debugSpinOverlay" class="primary-button">Run Test Spin</button>
+                        </div>
+                        <p class="fine-print">
+                            Test Spin uses the real roulette physics with an isolated negative round ID.
+                            Its result is ignored by the economy and never announced in chat.
+                        </p>
+                    </article>
 
-                    <div class="status-row">
-                        <span>OBS overlay</span>
-                        <span class="status-value">http://localhost:3000/overlay</span>
-                    </div>
-                </div>
+                    <article class="card debug-card">
+                        <div class="settings-card-title">
+                            <div class="settings-icon">!</div>
+                            <div>
+                                <h3>Round recovery</h3>
+                                <p>Emergency controls for a stuck or broken live round.</p>
+                            </div>
+                        </div>
+
+                        <button id="cancelActiveRound" class="danger-button">Cancel Active Round</button>
+                        <p class="fine-print">
+                            Bets are only reserved until settlement, so cancelling releases them without changing viewer balances.
+                            RouletteBot posts a cancellation notice in chat.
+                        </p>
+                    </article>
+
+                    <article class="card debug-card">
+                        <div class="settings-card-title">
+                            <div class="settings-icon">{ }</div>
+                            <div>
+                                <h3>Developer tools</h3>
+                                <p>Useful information to attach when diagnosing a problem.</p>
+                            </div>
+                        </div>
+
+                        <div class="button-stack">
+                            <button id="copyDiagnostics" class="secondary-button">Copy Diagnostics</button>
+                            <button id="openDataFolder" class="secondary-button">Open App Data Folder</button>
+                            <button id="debugOpenLogsFolder" class="secondary-button">Open Log Folder</button>
+                            <button id="openDevTools" class="secondary-button">Open Developer Tools</button>
+                            <button id="restartApp" class="danger-outline-button">Restart RouletteBot</button>
+                        </div>
+                    </article>
+                </section>
             </section>
         </main>
 

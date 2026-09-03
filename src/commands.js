@@ -1,5 +1,3 @@
-const MIN_BET = 100;
-
 const NAMED_RESULTS = new Set([
     "odd",
     "even",
@@ -10,8 +8,13 @@ const NAMED_RESULTS = new Set([
 
 const {
     getBalance,
-    getLastRouletteResult
+    getLastRouletteResult,
+    getLeaderboard
 } = require("./database");
+
+const {
+    getSettings
+} = require("./settings");
 
 const {
     getRandomCooldownLine
@@ -31,13 +34,48 @@ const {
 // !gamble help message
 // ----------------------------------------------------
 
-function gambleGuide() {
+function gambleGuide(minimumBet = getSettings().minimumBet) {
+    const exampleAmount =
+        Math.max(250, minimumBet);
+
     return (
         "Usage: !gamble <result> <bet amount> | " +
         "Result: odd, even, red, black, green, or a number 0-36. | " +
-        "Minimum bet: 100. Maximum bet: your available balance. " +
-        "Example: !gamble red 250"
+        `Minimum bet: ${minimumBet.toLocaleString()}. ` +
+        "Maximum bet: your available balance. " +
+        `Example: !gamble red ${exampleAmount.toLocaleString()} | ` +
+        "!GambleCommands for all commands."
     );
+}
+
+
+// ----------------------------------------------------
+// Viewer command list
+// ----------------------------------------------------
+
+function gambleCommandsResponse(username) {
+    return (
+        `@${username} Roulette commands: ` +
+        "`!gamble <red/black/odd/even/green/0-36> <amount>` | " +
+        "`!balance` | `!result` | `!leaderboard` | " +
+        "Example: `!gamble red 500`"
+    );
+}
+
+
+function leaderboardResponse() {
+    const leaders = getLeaderboard(5);
+
+    if (leaders.length === 0) {
+        return "🏆 Roulette Leaderboard: nobody has chips yet.";
+    }
+
+    const entries = leaders.map(
+        (user, index) =>
+            `${index + 1}. ${user.username} — ${user.balance.toLocaleString()} chips`
+    );
+
+    return `🏆 Roulette Leaderboard: ${entries.join(" | ")}`;
 }
 
 
@@ -181,6 +219,32 @@ async function handleCommand(event, sendChatMessage) {
 
 
     // ====================================================
+    // !gamblecommands
+    // ====================================================
+
+    if (command === "!gamblecommands") {
+        await sendChatMessage(
+            gambleCommandsResponse(username)
+        );
+
+        return;
+    }
+
+
+    // ====================================================
+    // !leaderboard
+    // ====================================================
+
+    if (command === "!leaderboard") {
+        await sendChatMessage(
+            leaderboardResponse()
+        );
+
+        return;
+    }
+
+
+    // ====================================================
     // !balance
     // ====================================================
 
@@ -243,6 +307,11 @@ async function handleCommand(event, sendChatMessage) {
         const rouletteState =
             getRouletteState();
 
+        // Read the current setting once for this command so a UI
+        // edit cannot change validation halfway through processing.
+        const minimumBet =
+            getSettings().minimumBet;
+
         if (
             rouletteState.status ===
             "cooldown"
@@ -272,7 +341,7 @@ async function handleCommand(event, sendChatMessage) {
 
         if (parts.length !== 3) {
             await sendChatMessage(
-                gambleGuide()
+                gambleGuide(minimumBet)
             );
 
             return;
@@ -289,7 +358,7 @@ async function handleCommand(event, sendChatMessage) {
 
         if (!validResult(result)) {
             await sendChatMessage(
-                gambleGuide()
+                gambleGuide(minimumBet)
             );
 
             return;
@@ -301,16 +370,16 @@ async function handleCommand(event, sendChatMessage) {
         ) {
             await sendChatMessage(
                 `${username}, your bet must be a whole number. ` +
-                `The minimum bet is ${MIN_BET} chips.`
+                `The minimum bet is ${minimumBet.toLocaleString()} chips.`
             );
 
             return;
         }
 
-        if (betAmount < MIN_BET) {
+        if (betAmount < minimumBet) {
             await sendChatMessage(
                 `${username}, the minimum bet is ` +
-                `${MIN_BET.toLocaleString()} chips.`
+                `${minimumBet.toLocaleString()} chips.`
             );
 
             return;

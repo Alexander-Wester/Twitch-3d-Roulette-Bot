@@ -1,6 +1,6 @@
 {
   "name": "twitch-3d-roulette-bot",
-  "version": "1.1.0",
+  "version": "1.3.3",
   "description": "Desktop Twitch roulette bot with a physics-driven OBS overlay.",
   "main": "desktop/main.js",
   "scripts": {

@@ -128,6 +128,8 @@
         let bettingEndsAt = 0;
         let timerFrame = null;
         const outboundQueue = [];
+        const pendingBotMessages = [];
+        let physicsReady = false;
 
 
         function showTable() {
@@ -267,11 +269,54 @@
 
 
         function handleBotMessage(data) {
+            // The WebSocket can connect before roulette.js has finished
+            // loading Three.js/Rapier. Queue all visual control messages
+            // until the physics module explicitly reports ready, otherwise
+            // a debug/test round started immediately after app launch can
+            // be silently lost.
+            if (
+                !physicsReady &&
+                data.type !== "connected"
+            ) {
+                pendingBotMessages.push(data);
+                return;
+            }
+
             switch (data.type) {
                 case "connected":
                     console.log(
                         "Roulette overlay connected to bot."
                     );
+                    break;
+
+                case "debugShowTable":
+                    showTable();
+                    bettingPanel.classList.add("hidden");
+
+                    window.dispatchEvent(
+                        new CustomEvent(
+                            "roulette-round-started",
+                            {
+                                detail: {
+                                    roundId: Number(data.roundId ?? -1),
+                                    debug: true
+                                }
+                            }
+                        )
+                    );
+                    break;
+
+                case "debugHideTable":
+                    hideTable();
+
+                    window.dispatchEvent(
+                        new CustomEvent(
+                            "roulette-hide-table",
+                            { detail: data }
+                        )
+                    );
+
+                    currentRoundId = null;
                     break;
 
                 case "roundStarted":
@@ -329,6 +374,26 @@
                     break;
             }
         }
+
+
+        window.addEventListener(
+            "roulette-physics-ready",
+            () => {
+                physicsReady = true;
+
+                // Tell the backend that this Browser Source is not merely
+                // connected, but is actually capable of rendering/spinning.
+                window.sendRouletteMessage({
+                    type: "overlayReady"
+                });
+
+                while (pendingBotMessages.length > 0) {
+                    handleBotMessage(
+                        pendingBotMessages.shift()
+                    );
+                }
+            }
+        );
 
 
         function connectToBot() {
