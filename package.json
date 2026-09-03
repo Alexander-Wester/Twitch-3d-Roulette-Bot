@@ -1,16 +1,25 @@
 {
   "name": "twitch-3d-roulette-bot",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "1.1.0",
+  "description": "Desktop Twitch roulette bot with a physics-driven OBS overlay.",
+  "main": "desktop/main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "electron .",
+    "start:bot": "node src/twitchBot.js",
+    "auth:bot": "node src/twitchAuth.js bot",
+    "auth:broadcaster": "node src/twitchAuth.js broadcaster",
+    "test": "echo \"No automated tests configured yet\""
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Alexander-Wester/Twitch-3d-Roulette-Bot.git"
   },
-  "keywords": [],
+  "keywords": [
+    "twitch",
+    "roulette",
+    "obs",
+    "electron"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
@@ -23,5 +32,8 @@
     "dotenv": "^17.4.2",
     "three": "^0.185.1",
     "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "electron": "^44.1.1"
   }
 }

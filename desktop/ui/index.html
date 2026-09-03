@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+    <title>Rhino's Roulette Bot</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="topbar">
+            <div>
+                <div class="eyebrow">TWITCH ROULETTE</div>
+                <h1>Rhino's Roulette Bot</h1>
+            </div>
+
+            <div
+                id="runtimeBadge"
+                class="runtime-badge waiting"
+            >
+                <span class="status-dot"></span>
+                <span id="runtimeBadgeText">Waiting for setup</span>
+            </div>
+        </header>
+
+        <nav class="tabs" aria-label="Application sections">
+            <button class="tab active">Setup</button>
+            <button class="tab disabled" disabled>Settings <span>Coming next</span></button>
+        </nav>
+
+        <main>
+            <section class="intro">
+                <h2>First-time setup</h2>
+                <p>
+                    Connect the Twitch channel where roulette will run, then connect
+                    the Twitch account that should speak in chat. After both are connected,
+                    RouletteBot starts automatically.
+                </p>
+            </section>
+
+            <div
+                id="clientIdWarning"
+                class="warning hidden"
+            >
+                <strong>Twitch Client ID missing.</strong>
+                The developer must set it once in <code>src/appConfig.js</code> before distributing RouletteBot.
+            </div>
+
+            <section class="setup-grid">
+                <article class="card account-card">
+                    <div class="card-heading">
+                        <div>
+                            <div class="step-number">1</div>
+                            <div>
+                                <h3>Broadcaster Account</h3>
+                                <p>The main Twitch channel where roulette will run.</p>
+                            </div>
+                        </div>
+                        <span
+                            id="broadcasterStatusPill"
+                            class="pill disconnected"
+                        >Not connected</span>
+                    </div>
+
+                    <div class="account-display">
+                        <div
+                            id="broadcasterAvatar"
+                            class="account-avatar"
+                        >B</div>
+                        <div>
+                            <div class="muted-label">Connected channel</div>
+                            <div
+                                id="broadcasterLogin"
+                                class="account-name"
+                            >No account connected</div>
+                        </div>
+                    </div>
+
+                    <button
+                        id="connectBroadcaster"
+                        class="primary-button"
+                    >
+                        Connect Broadcaster
+                    </button>
+
+                    <p class="fine-print">
+                        Sign into Twitch using the streamer's main channel account.
+                    </p>
+                </article>
+
+                <article class="card account-card">
+                    <div class="card-heading">
+                        <div>
+                            <div class="step-number">2</div>
+                            <div>
+                                <h3>Bot Account</h3>
+                                <p>The Twitch account that reads and replies in chat.</p>
+                            </div>
+                        </div>
+                        <span
+                            id="botStatusPill"
+                            class="pill disconnected"
+                        >Not connected</span>
+                    </div>
+
+                    <div class="account-display">
+                        <div
+                            id="botAvatar"
+                            class="account-avatar"
+                        >R</div>
+                        <div>
+                            <div class="muted-label">Chat account</div>
+                            <div
+                                id="botLogin"
+                                class="account-name"
+                            >No account connected</div>
+                        </div>
+                    </div>
+
+                    <button
+                        id="connectBot"
+                        class="primary-button"
+                    >
+                        Connect Bot Account
+                    </button>
+
+                    <p class="fine-print">
+                        Make sure Twitch is authorizing the bot account, not the broadcaster again.
+                    </p>
+                </article>
+            </section>
+
+            <section
+                id="authProgress"
+                class="auth-progress hidden"
+            >
+                <div class="spinner"></div>
+                <div>
+                    <strong id="authProgressTitle">Waiting for Twitch authorization</strong>
+                    <p id="authProgressText">
+                        A Twitch page has been opened in your browser.
+                    </p>
+                    <div class="device-code-line">
+                        Device code:
+                        <code id="deviceCode">--------</code>
+                    </div>
+                </div>
+            </section>
+
+            <article class="card obs-card">
+                <div class="card-heading obs-heading">
+                    <div>
+                        <div class="step-number">3</div>
+                        <div>
+                            <h3>OBS Overlay</h3>
+                            <p>Add the roulette wheel as a Browser Source in OBS.</p>
+                        </div>
+                    </div>
+                    <span class="pill local">Local</span>
+                </div>
+
+                <div class="overlay-url-row">
+                    <div class="url-box">
+                        <span class="url-label">Browser Source URL</span>
+                        <code id="overlayUrl">http://localhost:3000/overlay</code>
+                    </div>
+                    <button
+                        id="copyOverlayUrl"
+                        class="secondary-button"
+                    >Copy URL</button>
+                </div>
+
+                <div class="instructions-grid">
+                    <div>
+                        <h4>OBS setup</h4>
+                        <ol>
+                            <li>In OBS, add a new <strong>Browser Source</strong>.</li>
+                            <li>Paste the URL shown above.</li>
+                            <li>Set width to <strong>1920</strong> and height to <strong>1080</strong>.</li>
+                            <li>Keep RouletteBot running while you stream.</li>
+                        </ol>
+                    </div>
+
+                    <div class="mod-panel">
+                        <h4>Recommended: Mod the bot</h4>
+                        <p>
+                            Passive income reads the channel's chatter list, so the bot
+                            account should be a moderator.
+                        </p>
+                        <div class="mod-command">
+                            <code id="modCommand">/mod YourBotName</code>
+                            <button
+                                id="copyModCommand"
+                                class="small-button"
+                                disabled
+                            >Copy</button>
+                        </div>
+                    </div>
+                </div>
+            </article>
+
+            <section class="status-panel">
+                <h3>Application status</h3>
+
+                <div class="status-list">
+                    <div class="status-row">
+                        <span>Broadcaster authorization</span>
+                        <span id="broadcasterStatusText" class="status-value">Not connected</span>
+                    </div>
+
+                    <div class="status-row">
+                        <span>Bot authorization</span>
+                        <span id="botStatusText" class="status-value">Not connected</span>
+                    </div>
+
+                    <div class="status-row">
+                        <span>RouletteBot</span>
+                        <span id="rouletteStatusText" class="status-value">Waiting for setup</span>
+                    </div>
+
+                    <div class="status-row">
+                        <span>OBS overlay</span>
+                        <span class="status-value">http://localhost:3000/overlay</span>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            Twitch access tokens refresh automatically. Normally you only need to reconnect
+            after Twitch authorization is revoked or after an inactive refresh token expires.
+        </footer>
+    </div>
+
+    <div
+        id="toast"
+        class="toast hidden"
+        role="status"
+        aria-live="polite"
+    ></div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

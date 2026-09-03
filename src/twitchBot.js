@@ -1,6 +1,3 @@
-require("dotenv").config();
-
-const fs = require("fs");
 const WebSocket = require("ws");
 const { handleCommand } = require("./commands");
 
@@ -26,137 +23,205 @@ const {
     ANNOUNCE_ALL_RESULTS
 } = require("./roundManager");
 
-const CLIENT_ID = process.env.TWITCH_CLIENT_ID;
-const CHANNEL_LOGIN = process.env.TWITCH_CHANNEL;
+const {
+    setAuthStorageDir,
+    ensureValidAuth
+} = require("./twitchAuth");
 
+const {
+    TWITCH_CLIENT_ID: CLIENT_ID,
+    hasTwitchClientId
+} = require("./appConfig");
 const EVENTSUB_URL = "wss://eventsub.wss.twitch.tv/ws";
+const AUTH_MAINTENANCE_MS = 60 * 60 * 1000;
 
 let accessToken;
 let botUserId;
 let botLogin;
 let broadcasterUserId;
+let broadcasterLogin;
 
 let websocketSessionId = null;
+let currentWebSocket = null;
+let authMaintenanceTimer = null;
+let started = false;
+let statusCallback = null;
 
 
-// ----------------------------------------------------
-// Load our saved Twitch token
-// ----------------------------------------------------
+function emitStatus(status, extra = {}) {
+    const payload = {
+        status,
+        broadcasterLogin,
+        botLogin,
+        ...extra
+    };
 
-function loadToken() {
-    if (!fs.existsSync("tokens.json")) {
-        throw new Error(
-            "tokens.json was not found. Run twitchAuth.js first."
-        );
-    }
-
-    const tokens = JSON.parse(
-        fs.readFileSync("tokens.json", "utf8")
-    );
-
-    if (!tokens.access_token) {
-        throw new Error(
-            "tokens.json does not contain an access_token."
-        );
-    }
-
-    accessToken = tokens.access_token;
+    statusCallback?.(payload);
 }
 
 
-// ----------------------------------------------------
-// Ask Twitch who owns this access token
-// ----------------------------------------------------
+async function loadCurrentAuthorizations() {
+    const broadcasterAuth =
+        await ensureValidAuth("broadcaster");
 
-async function getBotAccount() {
+    const botAuth =
+        await ensureValidAuth("bot");
+
+    broadcasterUserId =
+        broadcasterAuth.identity.user_id;
+
+    broadcasterLogin =
+        broadcasterAuth.identity.login;
+
+    botUserId =
+        botAuth.identity.user_id;
+
+    botLogin =
+        botAuth.identity.login;
+
+    accessToken =
+        botAuth.tokens.access_token;
+
+    return {
+        broadcasterAuth,
+        botAuth
+    };
+}
+
+
+async function refreshBotAuthorization(forceRefresh = false) {
+    const auth = await ensureValidAuth(
+        "bot",
+        { forceRefresh }
+    );
+
+    accessToken = auth.tokens.access_token;
+    botUserId = auth.identity.user_id;
+    botLogin = auth.identity.login;
+
+    return auth;
+}
+
+
+async function getCurrentBotAccessToken() {
+    if (!accessToken) {
+        await refreshBotAuthorization(false);
+    }
+
+    return accessToken;
+}
+
+
+async function fetchAsBot(url, options = {}, retryOnUnauthorized = true) {
+    const token = await getCurrentBotAccessToken();
+
+    const headers = {
+        ...(options.headers || {}),
+        Authorization: `Bearer ${token}`,
+        "Client-Id": CLIENT_ID
+    };
+
     const response = await fetch(
-        "https://id.twitch.tv/oauth2/validate",
+        url,
         {
-            headers: {
-                Authorization: `OAuth ${accessToken}`
-            }
+            ...options,
+            headers
         }
     );
 
-    if (!response.ok) {
-        const text = await response.text();
+    if (
+        response.status === 401 &&
+        retryOnUnauthorized
+    ) {
+        console.warn(
+            "[Twitch Auth] API returned 401. Refreshing bot token and retrying once."
+        );
 
-        throw new Error(
-            `Twitch token validation failed: ${text}`
+        await refreshBotAuthorization(true);
+
+        return fetchAsBot(
+            url,
+            options,
+            false
         );
     }
 
-    const data = await response.json();
-
-    botUserId = data.user_id;
-    botLogin = data.login;
-
-    console.log(`Bot account: ${botLogin}`);
-    console.log(`Bot user ID: ${botUserId}`);
+    return response;
 }
 
 
-// ----------------------------------------------------
-// Convert the channel username into Twitch's numeric ID
-// ----------------------------------------------------
+function startAuthMaintenance() {
+    if (authMaintenanceTimer) {
+        clearInterval(authMaintenanceTimer);
+    }
 
-async function getBroadcasterAccount() {
-    const response = await fetch(
-        `https://api.twitch.tv/helix/users?login=${encodeURIComponent(CHANNEL_LOGIN)}`,
-        {
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Client-Id": CLIENT_ID
+    const maintain = async () => {
+        try {
+            const botAuth =
+                await ensureValidAuth("bot");
+
+            accessToken =
+                botAuth.tokens.access_token;
+
+            botUserId =
+                botAuth.identity.user_id;
+
+            botLogin =
+                botAuth.identity.login;
+
+            // Broadcaster token is not used for every chat API call,
+            // but Twitch requires maintained OAuth sessions to be
+            // validated regularly too.
+            const broadcasterAuth =
+                await ensureValidAuth("broadcaster");
+
+            broadcasterUserId =
+                broadcasterAuth.identity.user_id;
+
+            broadcasterLogin =
+                broadcasterAuth.identity.login;
+
+            if (botAuth.refreshed || broadcasterAuth.refreshed) {
+                emitStatus("online", {
+                    message: "Twitch authorization refreshed automatically."
+                });
             }
+        } catch (error) {
+            console.error(
+                "[Twitch Auth] Maintenance failed:",
+                error.message
+            );
+
+            emitStatus("auth_required", {
+                message: error.message
+            });
         }
+    };
+
+    authMaintenanceTimer = setInterval(
+        maintain,
+        AUTH_MAINTENANCE_MS
     );
 
-    const data = await response.json();
-
-    if (!response.ok) {
-        throw new Error(
-            `Could not look up channel: ${JSON.stringify(data)}`
-        );
-    }
-
-    if (!data.data || data.data.length === 0) {
-        throw new Error(
-            `Twitch channel "${CHANNEL_LOGIN}" was not found.`
-        );
-    }
-
-    broadcasterUserId = data.data[0].id;
-
-    console.log(`Watching channel: ${data.data[0].login}`);
-    console.log(`Channel user ID: ${broadcasterUserId}`);
+    authMaintenanceTimer.unref?.();
 }
 
-
-// ----------------------------------------------------
-// Subscribe our WebSocket to chat messages
-// ----------------------------------------------------
 
 async function subscribeToChat() {
-    const response = await fetch(
+    const response = await fetchAsBot(
         "https://api.twitch.tv/helix/eventsub/subscriptions",
         {
             method: "POST",
-
             headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Client-Id": CLIENT_ID,
                 "Content-Type": "application/json"
             },
-
             body: JSON.stringify({
                 type: "channel.chat.message",
                 version: "1",
-
                 condition: {
                     broadcaster_user_id: broadcasterUserId,
                     user_id: botUserId
                 },
-
                 transport: {
                     method: "websocket",
                     session_id: websocketSessionId
@@ -177,22 +242,14 @@ async function subscribeToChat() {
 }
 
 
-// ----------------------------------------------------
-// Send a Twitch chat message
-// ----------------------------------------------------
-
 async function sendChatMessage(message) {
-    const response = await fetch(
+    const response = await fetchAsBot(
         "https://api.twitch.tv/helix/chat/messages",
         {
             method: "POST",
-
             headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Client-Id": CLIENT_ID,
                 "Content-Type": "application/json"
             },
-
             body: JSON.stringify({
                 broadcaster_id: broadcasterUserId,
                 sender_id: botUserId,
@@ -208,7 +265,6 @@ async function sendChatMessage(message) {
             "Failed to send chat message:",
             data
         );
-
         return;
     }
 
@@ -225,23 +281,16 @@ async function sendChatMessage(message) {
 }
 
 
-// ----------------------------------------------------
-// Handle commands
-// ----------------------------------------------------
-
 async function handleChatMessage(event) {
     const username = event.chatter_user_name;
     const message = event.message.text.trim();
 
     console.log(`[${username}]: ${message}`);
 
-    // Don't respond to ourselves.
     if (event.chatter_user_id === botUserId) {
         return;
     }
 
-    // Remember whether a roulette round existed before
-    // this chat command was processed.
     const stateBefore =
         getRouletteState();
 
@@ -253,12 +302,6 @@ async function handleChatMessage(event) {
     const stateAfter =
         getRouletteState();
 
-    // The first accepted !gamble changes the wheel from
-    // idle -> betting. That is the one moment we use to
-    // restart the 20-minute idle reminder timer.
-    //
-    // Extra bets during the same round do NOT reset it.
-    // Failed/cooldown !gamble attempts do NOT reset it.
     if (
         stateBefore.status === "idle" &&
         stateAfter.status === "betting"
@@ -268,30 +311,22 @@ async function handleChatMessage(event) {
 }
 
 
-// ----------------------------------------------------
-// Connect to Twitch EventSub
-// ----------------------------------------------------
-
-function connectWebSocket() {
-    console.log("\nConnecting to Twitch EventSub...");
-
-    const ws = new WebSocket(EVENTSUB_URL);
-
+function attachWebSocketHandlers(ws) {
     ws.on("open", () => {
         console.log("WebSocket connected.");
         console.log("Waiting for Twitch session...");
+
+        emitStatus("connecting", {
+            message: "Connected to Twitch. Waiting for EventSub session..."
+        });
     });
 
     ws.on("message", async rawData => {
         try {
             const data = JSON.parse(rawData.toString());
-
-            const messageType =
-                data.metadata?.message_type;
+            const messageType = data.metadata?.message_type;
 
             switch (messageType) {
-
-                // Twitch gives us our WebSocket session ID.
                 case "session_welcome":
                     websocketSessionId =
                         data.payload.session.id;
@@ -302,29 +337,19 @@ function connectWebSocket() {
 
                     await subscribeToChat();
 
-                    console.log(
-                        "\n========================================"
-                    );
+                    console.log("\n========================================");
                     console.log("RHINO'S ROULETTE BOT IS ONLINE");
-                    console.log(
-                        "========================================"
-                    );
-                    console.log(
-                        `Watching: ${CHANNEL_LOGIN}`
-                    );
-                    console.log(
-                        "Try typing !hello in Twitch chat."
-                    );
-                    console.log(
-                        "========================================\n"
-                    );
+                    console.log("========================================");
+                    console.log(`Watching: ${broadcasterLogin}`);
+                    console.log(`Speaking as: ${botLogin}`);
+                    console.log("========================================\n");
 
+                    emitStatus("online", {
+                        message: `Watching ${broadcasterLogin} as ${botLogin}.`
+                    });
                     break;
 
-
-                // Somebody sent a chat message.
                 case "notification":
-
                     if (
                         data.payload.subscription.type ===
                         "channel.chat.message"
@@ -333,13 +358,9 @@ function connectWebSocket() {
                             data.payload.event
                         );
                     }
-
                     break;
 
-
-                // Twitch may tell us to move to a new WebSocket.
-                case "session_reconnect":
-
+                case "session_reconnect": {
                     const reconnectUrl =
                         data.payload.session.reconnect_url;
 
@@ -347,26 +368,30 @@ function connectWebSocket() {
                         "Twitch requested WebSocket reconnect."
                     );
 
-                    ws.close();
-
-                    connectWebSocketTo(reconnectUrl);
-
+                    connectWebSocket(reconnectUrl);
                     break;
-
+                }
 
                 case "revocation":
                     console.error(
                         "Twitch revoked an EventSub subscription:",
                         data.payload.subscription
                     );
+
+                    emitStatus("error", {
+                        message: "Twitch revoked the chat subscription."
+                    });
                     break;
             }
-
         } catch (error) {
             console.error(
                 "Error processing Twitch message:",
                 error
             );
+
+            emitStatus("error", {
+                message: error.message
+            });
         }
     });
 
@@ -375,55 +400,80 @@ function connectWebSocket() {
             "WebSocket error:",
             error.message
         );
+
+        emitStatus("error", {
+            message: error.message
+        });
     });
 
     ws.on("close", () => {
-        console.log("WebSocket disconnected.");
-    });
-}
-
-
-// Twitch occasionally provides a special reconnect URL.
-function connectWebSocketTo(url) {
-    const ws = new WebSocket(url);
-
-    ws.on("message", async rawData => {
-        try {
-            const data = JSON.parse(rawData.toString());
-
-            if (
-                data.metadata?.message_type ===
-                "notification" &&
-                data.payload.subscription.type ===
-                "channel.chat.message"
-            ) {
-                await handleChatMessage(
-                    data.payload.event
-                );
-            }
-
-        } catch (error) {
-            console.error(
-                "Reconnect message error:",
-                error
-            );
+        if (currentWebSocket === ws) {
+            console.log("WebSocket disconnected.");
+            emitStatus("disconnected", {
+                message: "Twitch EventSub disconnected."
+            });
         }
     });
-
-    ws.on("error", error => {
-        console.error(
-            "Reconnect WebSocket error:",
-            error.message
-        );
-    });
 }
 
 
-// ----------------------------------------------------
-// Start bot
-// ----------------------------------------------------
+function connectWebSocket(url = EVENTSUB_URL) {
+    console.log("\nConnecting to Twitch EventSub...");
 
-async function start() {
+    const oldSocket = currentWebSocket;
+    const ws = new WebSocket(url);
+
+    currentWebSocket = ws;
+    attachWebSocketHandlers(ws);
+
+    // For a Twitch-requested reconnect, keep the old socket alive
+    // briefly while the replacement connection is established.
+    if (
+        oldSocket &&
+        oldSocket.readyState === WebSocket.OPEN
+    ) {
+        setTimeout(
+            () => {
+                try {
+                    oldSocket.close();
+                } catch {
+                    // Nothing to do.
+                }
+            },
+            5000
+        ).unref?.();
+    }
+}
+
+
+async function startBot(options = {}) {
+    if (started) {
+        return {
+            started: true,
+            broadcasterLogin,
+            botLogin
+        };
+    }
+
+    statusCallback =
+        typeof options.onStatus === "function"
+            ? options.onStatus
+            : null;
+
+    if (options.authStorageDir) {
+        setAuthStorageDir(options.authStorageDir);
+    }
+
+    if (!hasTwitchClientId()) {
+        throw new Error(
+            "Twitch Client ID is not configured. Set it in src/appConfig.js."
+        );
+    }
+
+    emitStatus("starting", {
+        message: "Starting RouletteBot..."
+    });
+
     console.log("\n========================================");
     console.log("RHINO'S ROULETTE BOT");
     console.log("========================================");
@@ -433,20 +483,8 @@ async function start() {
     );
     console.log("========================================\n");
 
-    if (!CLIENT_ID) {
-        throw new Error(
-            "TWITCH_CLIENT_ID is missing from .env"
-        );
-    }
+    await loadCurrentAuthorizations();
 
-    if (!CHANNEL_LOGIN) {
-        throw new Error(
-            "TWITCH_CHANNEL is missing from .env"
-        );
-    }
-
-    // Route physical roulette results from the OBS/browser
-    // source back into the authoritative round manager.
     setOverlayMessageHandler(
         data => handleOverlayMessage(
             data,
@@ -458,38 +496,65 @@ async function start() {
         getOverlayStateMessages
     );
 
-    // Start the local OBS overlay server.
     startOverlayServer();
 
-    loadToken();
-
-    await getBotAccount();
-    await getBroadcasterAccount();
-
-    // Award passive currency to everyone currently connected
-    // to Twitch chat once every five minutes.
     startPassiveIncome({
-        accessToken,
+        getAccessToken: getCurrentBotAccessToken,
         clientId: CLIENT_ID,
         broadcasterUserId,
         botUserId
     });
 
-    // If nobody starts a roulette round for 20 minutes,
-    // post one random degenerate-gambler reminder in chat.
-    // It continues every 20 idle minutes until a new round
-    // starts, at which point the countdown resets.
     startIdleGambleReminder({
         sendChatMessage,
         isRouletteIdle: () =>
             getRouletteState().status === "idle"
     });
 
+    startAuthMaintenance();
     connectWebSocket();
+
+    started = true;
+
+    return {
+        started: true,
+        broadcasterLogin,
+        broadcasterUserId,
+        botLogin,
+        botUserId
+    };
 }
 
 
-start().catch(error => {
-    console.error("\nERROR:", error.message);
-    process.exit(1);
-});
+function getBotStatus() {
+    return {
+        started,
+        broadcasterLogin,
+        broadcasterUserId,
+        botLogin,
+        botUserId,
+        websocketConnected:
+            currentWebSocket?.readyState === WebSocket.OPEN
+    };
+}
+
+
+module.exports = {
+    startBot,
+    getBotStatus,
+    sendChatMessage
+};
+
+
+// Preserve a development CLI entry point.
+if (require.main === module) {
+    startBot({
+        authStorageDir: process.cwd(),
+        onStatus: status => {
+            console.log("[Status]", status);
+        }
+    }).catch(error => {
+        console.error("\nERROR:", error.message);
+        process.exit(1);
+    });
+}

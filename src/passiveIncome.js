@@ -5,8 +5,6 @@ const {
 
 // ----------------------------------------------------
 // Passive income settings
-//
-// Easy to change later if you want to rebalance it.
 // ----------------------------------------------------
 
 const PASSIVE_INCOME_AMOUNT = 200;
@@ -16,11 +14,17 @@ let passiveIncomeTimer = null;
 let passiveIncomeCheckRunning = false;
 
 
+async function resolveAccessToken(options) {
+    if (typeof options.getAccessToken === "function") {
+        return options.getAccessToken();
+    }
+
+    return options.accessToken;
+}
+
+
 // ----------------------------------------------------
 // Get every Twitch user currently connected to chat.
-//
-// Twitch paginates this endpoint, so keep following the
-// cursor until every chatter has been collected.
 // ----------------------------------------------------
 
 async function getCurrentChatters({
@@ -81,20 +85,13 @@ async function getCurrentChatters({
 
 
 // ----------------------------------------------------
-// Award one five-minute passive-income tick.
+// Award one passive-income tick.
 //
-// changeBalance() already calls getOrCreateUser().
-// Therefore a brand-new chatter is first created with
-// the normal 1,000-chip starting balance, then receives
-// this 200-chip watch-time payment.
+// getAccessToken() is supported so a long-running bot always
+// uses the newest automatically-refreshed Twitch access token.
 // ----------------------------------------------------
 
-async function awardPassiveIncome({
-    accessToken,
-    clientId,
-    broadcasterUserId,
-    botUserId
-}) {
+async function awardPassiveIncome(options) {
     if (passiveIncomeCheckRunning) {
         console.warn(
             "Skipping passive income tick because the previous check is still running."
@@ -106,19 +103,25 @@ async function awardPassiveIncome({
     passiveIncomeCheckRunning = true;
 
     try {
+        const accessToken =
+            await resolveAccessToken(options);
+
+        if (!accessToken) {
+            throw new Error("No Twitch access token is available for passive income.");
+        }
+
         const chatters =
             await getCurrentChatters({
                 accessToken,
-                clientId,
-                broadcasterUserId,
-                moderatorUserId: botUserId
+                clientId: options.clientId,
+                broadcasterUserId: options.broadcasterUserId,
+                moderatorUserId: options.botUserId
             });
 
         let paidCount = 0;
 
         for (const chatter of chatters) {
-            // The roulette bot itself should not farm its own currency.
-            if (chatter.user_id === botUserId) {
+            if (chatter.user_id === options.botUserId) {
                 continue;
             }
 
@@ -160,9 +163,6 @@ async function awardPassiveIncome({
 
 // ----------------------------------------------------
 // Start passive income.
-//
-// The first payment happens AFTER five minutes, not
-// immediately when the bot launches.
 // ----------------------------------------------------
 
 function startPassiveIncome(options) {
@@ -182,7 +182,6 @@ function startPassiveIncome(options) {
         PASSIVE_INCOME_INTERVAL_MS
     );
 
-    // Do not let this timer alone keep Node alive during shutdown.
     passiveIncomeTimer.unref?.();
 
     return passiveIncomeTimer;
