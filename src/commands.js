@@ -129,8 +129,11 @@ function formatRemainingTime(milliseconds) {
 // ----------------------------------------------------
 
 function cooldownResponse(username, milliseconds) {
-    const line = getRandomCooldownLine();
     const remainingTime = formatRemainingTime(milliseconds);
+    const line = getRandomCooldownLine({
+        username,
+        time: remainingTime
+    });
 
     return (
         `@${username} ${line}\n` +

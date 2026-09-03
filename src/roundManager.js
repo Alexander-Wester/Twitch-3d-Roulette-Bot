@@ -38,9 +38,9 @@ const RED_NUMBERS = new Set([
 ]);
 
 let activeRound = null;
-// Continue round numbering across launches so completed-result
-// history is never overwritten by reused round IDs.
-let nextRoundId = getNextRouletteRoundId();
+// Round numbering is initialized lazily. This lets the Electron
+// desktop app point the database at AppData before SQLite opens.
+let nextRoundId = null;
 let cooldownEndsAt = 0;
 let hideTableTimer = null;
 
@@ -129,6 +129,10 @@ function getRouletteState() {
 // ----------------------------------------------------
 
 function createRound(sendChatMessage) {
+    if (nextRoundId === null) {
+        nextRoundId = getNextRouletteRoundId();
+    }
+
     const bettingDurationMs =
         randomBettingTimeMs();
 

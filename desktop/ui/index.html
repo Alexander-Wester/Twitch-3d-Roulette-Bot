@@ -38,6 +38,11 @@
                 data-page="settings"
             >Settings</button>
             <button
+                id="messagesTab"
+                class="tab"
+                data-page="messages"
+            >Messages</button>
+            <button
                 id="logsTab"
                 class="tab"
                 data-page="logs"
@@ -483,6 +488,92 @@
                         id="restoreDefaults"
                         class="danger-outline-button"
                     >Restore Defaults</button>
+                </section>
+            </section>
+
+            <section id="messagesPage" class="app-page hidden">
+                <section class="intro settings-intro">
+                    <div>
+                        <h2>Custom messages</h2>
+                        <p>
+                            Every personality message type has its own tab. Turn a type off to use
+                            its simple fallback message instead, or keep it on to edit the random
+                            message bank used in chat.
+                        </p>
+                    </div>
+                    <div id="messagesSaveState" class="save-state saved">
+                        <span class="save-dot"></span>
+                        <span>Saved</span>
+                    </div>
+                </section>
+
+                <div id="messagesError" class="warning hidden"></div>
+
+                <section class="messages-workspace">
+                    <aside class="message-type-sidebar">
+                        <div class="message-sidebar-title">Message types</div>
+                        <div id="messageTypeTabs" class="message-type-tabs"></div>
+                    </aside>
+
+                    <article class="card message-editor-card">
+                        <div class="message-editor-header">
+                            <div>
+                                <div id="messageTypeGroup" class="eyebrow">MESSAGE TYPE</div>
+                                <h3 id="messageTypeTitle">Loading...</h3>
+                                <p id="messageTypeDescription" class="message-type-description"></p>
+                            </div>
+
+                            <label class="message-toggle-wrap">
+                                <span>Custom messages</span>
+                                <label class="switch">
+                                    <input id="messageTypeEnabled" type="checkbox" checked>
+                                    <span class="switch-slider"></span>
+                                </label>
+                            </label>
+                        </div>
+
+                        <div class="message-fallback-panel">
+                            <div>
+                                <strong>Simple fallback</strong>
+                                <p>Used whenever custom messages for this type are turned off, or if its custom list is empty.</p>
+                            </div>
+                            <code id="messageFallbackText"></code>
+                        </div>
+
+                        <div id="messagePlaceholdersWrap" class="message-placeholders-wrap">
+                            <strong>Available placeholders</strong>
+                            <div id="messagePlaceholders" class="message-placeholders"></div>
+                            <p>Keep placeholders inside braces. RouletteBot replaces them when the message is sent.</p>
+                        </div>
+
+                        <div id="messageListWrap" class="message-list-wrap">
+                            <div class="message-list-heading">
+                                <div>
+                                    <strong>Random message bank</strong>
+                                    <p>One enabled message is chosen randomly each time this message type is used.</p>
+                                </div>
+                                <button id="addMessage" class="secondary-button">+ Add Message</button>
+                            </div>
+
+                            <div id="messageList" class="message-list"></div>
+                            <div id="messageEmptyState" class="message-empty-state hidden">
+                                No custom messages remain. The simple fallback above will be used until you add another.
+                            </div>
+                        </div>
+                    </article>
+                </section>
+
+                <section class="settings-footer-card messages-reset-card">
+                    <div>
+                        <strong>Reset every message to the shipped defaults</strong>
+                        <p>
+                            Restores every message currently included with RouletteBot and turns custom messages back on for every type.
+                        </p>
+                    </div>
+                    <button
+                        id="restoreDefaultMessages"
+                        class="danger-outline-button"
+                    >Reset All Messages</button>
                 </section>
             </section>
 

@@ -35,6 +35,30 @@ contextBridge.exposeInMainWorld(
                 "settings:restore-defaults"
             ),
 
+        getMessages: () =>
+            ipcRenderer.invoke(
+                "messages:get"
+            ),
+
+        updateMessageCategory: (key, category) =>
+            ipcRenderer.invoke(
+                "messages:update-category",
+                key,
+                category
+            ),
+
+        updateMessageGroup: (group, enabled) =>
+            ipcRenderer.invoke(
+                "messages:update-group-enabled",
+                group,
+                enabled
+            ),
+
+        restoreDefaultMessages: () =>
+            ipcRenderer.invoke(
+                "messages:restore-defaults"
+            ),
+
         copyText: text =>
             ipcRenderer.invoke(
                 "clipboard:copy-text",
@@ -110,6 +134,13 @@ contextBridge.exposeInMainWorld(
         onSettingsChanged: callback => {
             ipcRenderer.on(
                 "settings:changed",
+                (_event, data) => callback(data)
+            );
+        },
+
+        onMessagesChanged: callback => {
+            ipcRenderer.on(
+                "messages:changed",
                 (_event, data) => callback(data)
             );
         },

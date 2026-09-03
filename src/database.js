@@ -7,61 +7,195 @@ const {
     DEFAULT_SETTINGS
 } = require("./settings");
 
-// Make sure /data exists.
-const dataDirectory = path.join(__dirname, "..", "data");
 
-if (!fs.existsSync(dataDirectory)) {
-    fs.mkdirSync(dataDirectory, { recursive: true });
-}
+// ----------------------------------------------------
+// Database storage
+//
+// Desktop builds point this module at Electron's AppData
+// folder before the database is opened. CLI/development
+// use falls back to ./data.
+// ----------------------------------------------------
 
-const databasePath = path.join(
-    dataDirectory,
-    "roulette.db"
+let databaseStorageDir = path.join(
+    process.cwd(),
+    "data"
 );
 
-// Opening this file automatically creates it if needed.
-const db = new DatabaseSync(databasePath);
+let databasePath = null;
+let database = null;
 
 
-// ----------------------------------------------------
-// Create database tables
-// ----------------------------------------------------
-
-db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-        twitch_user_id TEXT PRIMARY KEY,
-        username TEXT NOT NULL,
-        balance INTEGER NOT NULL DEFAULT ${DEFAULT_SETTINGS.startingBalance},
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+function ensureStorageDirectory() {
+    fs.mkdirSync(
+        databaseStorageDir,
+        { recursive: true }
     );
-`);
+}
 
 
-db.exec(`
-    CREATE TABLE IF NOT EXISTS roulette_results (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        round_id INTEGER NOT NULL,
-        twitch_user_id TEXT NOT NULL,
-        username TEXT NOT NULL,
-        winning_number INTEGER NOT NULL,
-        total_wagered INTEGER NOT NULL,
-        balance_change INTEGER NOT NULL,
-        balance_after INTEGER NOT NULL,
-        bet_details TEXT NOT NULL,
-        resolved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-        UNIQUE (round_id, twitch_user_id)
+function resolveDatabasePath() {
+    return path.join(
+        databaseStorageDir,
+        "roulette.db"
     );
-`);
+}
 
-db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_roulette_results_user
-    ON roulette_results (
-        twitch_user_id,
-        id DESC
+
+function copyIfPresent(source, destination) {
+    if (!fs.existsSync(source)) {
+        return false;
+    }
+
+    fs.copyFileSync(source, destination);
+    return true;
+}
+
+
+function migrateLegacyDatabase(targetPath, legacyDatabasePaths = []) {
+    if (fs.existsSync(targetPath)) {
+        return null;
+    }
+
+    for (const candidate of legacyDatabasePaths) {
+        if (!candidate) {
+            continue;
+        }
+
+        const sourcePath = path.resolve(candidate);
+        const normalizedTarget = path.resolve(targetPath);
+
+        if (
+            sourcePath === normalizedTarget ||
+            !fs.existsSync(sourcePath)
+        ) {
+            continue;
+        }
+
+        const stats = fs.statSync(sourcePath);
+
+        if (!stats.isFile() || stats.size === 0) {
+            continue;
+        }
+
+        fs.copyFileSync(sourcePath, targetPath);
+
+        // Normally the bot uses SQLite's default journal mode, but
+        // copying a WAL too makes migration resilient if that changes.
+        copyIfPresent(
+            `${sourcePath}-wal`,
+            `${targetPath}-wal`
+        );
+
+        console.log(
+            `[Database] Copied existing roulette database from ${sourcePath} to AppData.`
+        );
+
+        return sourcePath;
+    }
+
+    return null;
+}
+
+
+function setDatabaseStorageDir(
+    directory,
+    { legacyDatabasePaths = [] } = {}
+) {
+    if (!directory) {
+        throw new Error(
+            "Database storage directory is required."
+        );
+    }
+
+    const nextDirectory = path.resolve(directory);
+
+    if (
+        database &&
+        path.resolve(databaseStorageDir) !== nextDirectory
+    ) {
+        throw new Error(
+            "Roulette database storage cannot be changed after the database has opened."
+        );
+    }
+
+    databaseStorageDir = nextDirectory;
+    ensureStorageDirectory();
+    databasePath = resolveDatabasePath();
+
+    const migratedFrom = migrateLegacyDatabase(
+        databasePath,
+        legacyDatabasePaths
     );
-`);
+
+    return {
+        databasePath,
+        migratedFrom
+    };
+}
+
+
+function initializeDatabase() {
+    if (database) {
+        return database;
+    }
+
+    ensureStorageDirectory();
+    databasePath = databasePath || resolveDatabasePath();
+
+    // Opening this file automatically creates it if needed.
+    database = new DatabaseSync(databasePath);
+
+    database.exec(`
+        CREATE TABLE IF NOT EXISTS users (
+            twitch_user_id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            balance INTEGER NOT NULL DEFAULT ${DEFAULT_SETTINGS.startingBalance},
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
+
+    database.exec(`
+        CREATE TABLE IF NOT EXISTS roulette_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            round_id INTEGER NOT NULL,
+            twitch_user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            winning_number INTEGER NOT NULL,
+            total_wagered INTEGER NOT NULL,
+            balance_change INTEGER NOT NULL,
+            balance_after INTEGER NOT NULL,
+            bet_details TEXT NOT NULL,
+            resolved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+            UNIQUE (round_id, twitch_user_id)
+        );
+    `);
+
+    database.exec(`
+        CREATE INDEX IF NOT EXISTS idx_roulette_results_user
+        ON roulette_results (
+            twitch_user_id,
+            id DESC
+        );
+    `);
+
+    console.log(
+        `[Database] Using ${databasePath}`
+    );
+
+    return database;
+}
+
+
+function getDatabase() {
+    return initializeDatabase();
+}
+
+
+function getDatabasePath() {
+    return databasePath || resolveDatabasePath();
+}
 
 
 // ----------------------------------------------------
@@ -71,7 +205,7 @@ db.exec(`
 // ----------------------------------------------------
 
 function getOrCreateUser(userId, username) {
-    const existingUser = db
+    const existingUser = getDatabase()
         .prepare(`
             SELECT *
             FROM users
@@ -81,7 +215,7 @@ function getOrCreateUser(userId, username) {
 
     if (existingUser) {
         // Update their username in case they changed it on Twitch.
-        db.prepare(`
+        getDatabase().prepare(`
             UPDATE users
             SET
                 username = ?,
@@ -89,7 +223,7 @@ function getOrCreateUser(userId, username) {
             WHERE twitch_user_id = ?
         `).run(username, userId);
 
-        return db
+        return getDatabase()
             .prepare(`
                 SELECT *
                 FROM users
@@ -103,7 +237,7 @@ function getOrCreateUser(userId, username) {
     const startingBalance =
         getSettings().startingBalance;
 
-    db.prepare(`
+    getDatabase().prepare(`
         INSERT INTO users (
             twitch_user_id,
             username,
@@ -120,7 +254,7 @@ function getOrCreateUser(userId, username) {
         `New player created: ${username} (${startingBalance} chips)`
     );
 
-    return db
+    return getDatabase()
         .prepare(`
             SELECT *
             FROM users
@@ -155,7 +289,7 @@ function getBalance(userId, username) {
 function changeBalance(userId, username, amount) {
     getOrCreateUser(userId, username);
 
-    db.prepare(`
+    getDatabase().prepare(`
         UPDATE users
         SET
             balance = balance + ?,
@@ -179,7 +313,7 @@ function changeBalance(userId, username, amount) {
 function setBalance(userId, username, amount) {
     getOrCreateUser(userId, username);
 
-    db.prepare(`
+    getDatabase().prepare(`
         UPDATE users
         SET
             balance = ?,
@@ -213,7 +347,7 @@ function saveRouletteResult({
     balanceChange,
     balanceAfter
 }) {
-    db.prepare(`
+    getDatabase().prepare(`
         INSERT INTO roulette_results (
             round_id,
             twitch_user_id,
@@ -253,7 +387,7 @@ function saveRouletteResult({
 // ----------------------------------------------------
 
 function getLastRouletteResult(userId) {
-    const row = db
+    const row = getDatabase()
         .prepare(`
             SELECT
                 round_id,
@@ -309,7 +443,7 @@ function getLastRouletteResult(userId) {
 // ----------------------------------------------------
 
 function getNextRouletteRoundId() {
-    const row = db
+    const row = getDatabase()
         .prepare(`
             SELECT COALESCE(MAX(round_id), 0) AS max_round_id
             FROM roulette_results
@@ -331,7 +465,7 @@ function getLeaderboard(limit = 5) {
         Math.min(25, Number.isInteger(limit) ? limit : 5)
     );
 
-    return db
+    return getDatabase()
         .prepare(`
             SELECT
                 twitch_user_id,
@@ -348,6 +482,8 @@ function getLeaderboard(limit = 5) {
 
 
 module.exports = {
+    setDatabaseStorageDir,
+    getDatabasePath,
     getOrCreateUser,
     getBalance,
     changeBalance,

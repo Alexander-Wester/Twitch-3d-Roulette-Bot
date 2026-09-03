@@ -3,10 +3,12 @@ const appApi = window.rouletteApp;
 const els = {
     setupTab: document.getElementById("setupTab"),
     settingsTab: document.getElementById("settingsTab"),
+    messagesTab: document.getElementById("messagesTab"),
     logsTab: document.getElementById("logsTab"),
     debugTab: document.getElementById("debugTab"),
     setupPage: document.getElementById("setupPage"),
     settingsPage: document.getElementById("settingsPage"),
+    messagesPage: document.getElementById("messagesPage"),
     logsPage: document.getElementById("logsPage"),
     debugPage: document.getElementById("debugPage"),
 
@@ -53,6 +55,22 @@ const els = {
     idleReminderEnabled: document.getElementById("idleReminderEnabled"),
     idleReminderMinutes: document.getElementById("idleReminderMinutes"),
     announceAllResults: document.getElementById("announceAllResults"),
+
+    messagesSaveState: document.getElementById("messagesSaveState"),
+    messagesError: document.getElementById("messagesError"),
+    messageTypeTabs: document.getElementById("messageTypeTabs"),
+    messageTypeGroup: document.getElementById("messageTypeGroup"),
+    messageTypeTitle: document.getElementById("messageTypeTitle"),
+    messageTypeDescription: document.getElementById("messageTypeDescription"),
+    messageTypeEnabled: document.getElementById("messageTypeEnabled"),
+    messageFallbackText: document.getElementById("messageFallbackText"),
+    messagePlaceholdersWrap: document.getElementById("messagePlaceholdersWrap"),
+    messagePlaceholders: document.getElementById("messagePlaceholders"),
+    messageListWrap: document.getElementById("messageListWrap"),
+    messageList: document.getElementById("messageList"),
+    messageEmptyState: document.getElementById("messageEmptyState"),
+    addMessage: document.getElementById("addMessage"),
+    restoreDefaultMessages: document.getElementById("restoreDefaultMessages"),
 
     logViewer: document.getElementById("logViewer"),
     logEmptyState: document.getElementById("logEmptyState"),
@@ -110,6 +128,10 @@ let currentSettings = null;
 let authInProgress = null;
 let toastTimer = null;
 let settingsSaveInProgress = false;
+let messageEditorState = null;
+let currentMessageType = null;
+let messageSaveTimer = null;
+let messageSaveInProgress = false;
 let logEntries = [];
 let logFilter = "all";
 let logSearchText = "";
@@ -139,6 +161,7 @@ function showPage(pageName) {
     const pages = {
         setup: els.setupPage,
         settings: els.settingsPage,
+        messages: els.messagesPage,
         logs: els.logsPage,
         debug: els.debugPage
     };
@@ -146,6 +169,7 @@ function showPage(pageName) {
     const tabs = {
         setup: els.setupTab,
         settings: els.settingsTab,
+        messages: els.messagesTab,
         logs: els.logsTab,
         debug: els.debugTab
     };
@@ -162,6 +186,10 @@ function showPage(pageName) {
             "active",
             name === pageName
         );
+    }
+
+    if (pageName === "messages") {
+        renderMessageEditor();
     }
 
     if (pageName === "logs") {
@@ -534,6 +562,408 @@ async function saveSettingsFromUi() {
 
 
 // ----------------------------------------------------
+// Custom messages
+// ----------------------------------------------------
+
+function setMessagesSaveState(state, text) {
+    els.messagesSaveState.classList.remove(
+        "saved",
+        "saving",
+        "error"
+    );
+
+    els.messagesSaveState.classList.add(state);
+    els.messagesSaveState.querySelector("span:last-child").textContent = text;
+}
+
+
+function showMessagesError(message = "") {
+    els.messagesError.textContent = message;
+    els.messagesError.classList.toggle(
+        "hidden",
+        !message
+    );
+}
+
+
+function messageCategoryEntries() {
+    return Object.entries(
+        messageEditorState?.categories || {}
+    );
+}
+
+
+function renderMessageTypeTabs() {
+    els.messageTypeTabs.replaceChildren();
+
+    const entries = messageCategoryEntries();
+    let lastGroup = null;
+
+    for (const [key, category] of entries) {
+        if (category.group !== lastGroup) {
+            const groupName = category.group;
+            const groupCategories = entries
+                .filter(([, item]) => item.group === groupName)
+                .map(([, item]) => item);
+
+            const enabledCount = groupCategories.filter(
+                item => item.enabled
+            ).length;
+
+            const allEnabled =
+                enabledCount === groupCategories.length;
+
+            const noneEnabled =
+                enabledCount === 0;
+
+            const heading = document.createElement("div");
+            heading.className = "message-type-group-heading";
+
+            const headingText = document.createElement("span");
+            headingText.textContent = groupName;
+
+            const groupControl = document.createElement("div");
+            groupControl.className = "message-group-toggle";
+
+            const groupState = document.createElement("span");
+            groupState.className = "message-group-toggle-state";
+            groupState.textContent = allEnabled
+                ? "All custom"
+                : noneEnabled
+                    ? "All plain"
+                    : "Mixed";
+
+            const switchLabel = document.createElement("label");
+            switchLabel.className = "switch message-group-switch";
+            switchLabel.title =
+                `Turn every ${groupName} custom message type on or off`;
+
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.checked = allEnabled;
+            checkbox.indeterminate = !allEnabled && !noneEnabled;
+            checkbox.setAttribute(
+                "aria-label",
+                `Toggle all ${groupName} custom messages`
+            );
+
+            const slider = document.createElement("span");
+            slider.className = "switch-slider";
+
+            if (checkbox.indeterminate) {
+                slider.classList.add("is-mixed");
+            }
+
+            checkbox.addEventListener(
+                "change",
+                async () => {
+                    const enabled = Boolean(checkbox.checked);
+                    checkbox.disabled = true;
+                    showMessagesError("");
+                    setMessagesSaveState("saving", "Saving section...");
+
+                    try {
+                        const flushed = await flushMessageSave();
+
+                        if (!flushed) {
+                            throw new Error(
+                                "Could not save the currently edited message first."
+                            );
+                        }
+
+                        const result = await appApi.updateMessageGroup(
+                            groupName,
+                            enabled
+                        );
+
+                        if (!result.success) {
+                            throw new Error(
+                                result.error ||
+                                "Could not update the message section."
+                            );
+                        }
+
+                        messageEditorState = result.state;
+                        renderMessageEditor();
+                        showToast(
+                            `${groupName} custom messages turned ${enabled ? "on" : "off"}.`
+                        );
+                    } catch (error) {
+                        showMessagesError(error.message);
+                        setMessagesSaveState("error", "Not saved");
+                        renderMessageTypeTabs();
+                    }
+                }
+            );
+
+            switchLabel.append(checkbox, slider);
+            groupControl.append(groupState, switchLabel);
+            heading.append(headingText, groupControl);
+            els.messageTypeTabs.appendChild(heading);
+            lastGroup = groupName;
+        }
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "message-type-tab";
+        button.classList.toggle(
+            "active",
+            key === currentMessageType
+        );
+        button.dataset.messageType = key;
+
+        const label = document.createElement("span");
+        label.textContent = category.label;
+
+        const state = document.createElement("small");
+        state.textContent = category.enabled ? "Custom" : "Plain";
+        state.className = category.enabled ? "custom-on" : "custom-off";
+
+        button.append(label, state);
+
+        button.addEventListener(
+            "click",
+            async () => {
+                if (key === currentMessageType) {
+                    return;
+                }
+
+                await flushMessageSave();
+                currentMessageType = key;
+                renderMessageEditor();
+            }
+        );
+
+        els.messageTypeTabs.appendChild(button);
+    }
+}
+
+function createMessageRow(message, index, enabled) {
+    const row = document.createElement("div");
+    row.className = "message-edit-row";
+
+    const number = document.createElement("span");
+    number.className = "message-row-number";
+    number.textContent = String(index + 1);
+
+    const textarea = document.createElement("textarea");
+    textarea.className = "message-textarea";
+    textarea.value = message;
+    textarea.rows = 2;
+    textarea.maxLength = 450;
+    textarea.disabled = !enabled;
+    textarea.setAttribute(
+        "aria-label",
+        `Custom message ${index + 1}`
+    );
+
+    textarea.addEventListener(
+        "input",
+        () => scheduleMessageSave()
+    );
+
+    textarea.addEventListener(
+        "blur",
+        () => flushMessageSave()
+    );
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "message-delete-button";
+    remove.textContent = "Delete";
+    remove.disabled = !enabled;
+
+    remove.addEventListener(
+        "click",
+        async () => {
+            row.remove();
+            renumberMessageRows();
+            await saveCurrentMessageCategory();
+        }
+    );
+
+    row.append(number, textarea, remove);
+    return row;
+}
+
+
+function renumberMessageRows() {
+    Array.from(
+        els.messageList.querySelectorAll(".message-edit-row")
+    ).forEach((row, index) => {
+        const number = row.querySelector(".message-row-number");
+        const textarea = row.querySelector(".message-textarea");
+        number.textContent = String(index + 1);
+        textarea.setAttribute(
+            "aria-label",
+            `Custom message ${index + 1}`
+        );
+    });
+
+    els.messageEmptyState.classList.toggle(
+        "hidden",
+        els.messageList.children.length !== 0
+    );
+}
+
+
+function collectCurrentMessageCategory() {
+    return {
+        enabled: Boolean(els.messageTypeEnabled.checked),
+        messages: Array.from(
+            els.messageList.querySelectorAll(".message-textarea")
+        )
+            .map(textarea => textarea.value.trim())
+            .filter(Boolean)
+    };
+}
+
+
+function renderMessageEditor() {
+    if (!messageEditorState) {
+        return;
+    }
+
+    const entries = messageCategoryEntries();
+
+    if (
+        !currentMessageType ||
+        !messageEditorState.categories[currentMessageType]
+    ) {
+        currentMessageType = entries[0]?.[0] || null;
+    }
+
+    renderMessageTypeTabs();
+
+    const category =
+        messageEditorState.categories[currentMessageType];
+
+    if (!category) {
+        return;
+    }
+
+    els.messageTypeGroup.textContent = category.group;
+    els.messageTypeTitle.textContent = category.label;
+    els.messageTypeDescription.textContent = category.description;
+    els.messageTypeEnabled.checked = Boolean(category.enabled);
+    els.messageFallbackText.textContent = category.fallback;
+
+    els.messagePlaceholders.replaceChildren();
+
+    for (const placeholder of category.placeholders) {
+        const code = document.createElement("code");
+        code.textContent = `{${placeholder}}`;
+        els.messagePlaceholders.appendChild(code);
+    }
+
+    els.messagePlaceholdersWrap.classList.toggle(
+        "hidden",
+        category.placeholders.length === 0
+    );
+
+    els.messageList.replaceChildren();
+
+    category.messages.forEach(
+        (message, index) => {
+            els.messageList.appendChild(
+                createMessageRow(
+                    message,
+                    index,
+                    category.enabled
+                )
+            );
+        }
+    );
+
+    els.addMessage.disabled = !category.enabled;
+    els.messageListWrap.classList.toggle(
+        "personality-disabled",
+        !category.enabled
+    );
+
+    renumberMessageRows();
+    showMessagesError("");
+    setMessagesSaveState("saved", "Saved");
+}
+
+
+function scheduleMessageSave() {
+    clearTimeout(messageSaveTimer);
+    setMessagesSaveState("saving", "Editing...");
+
+    messageSaveTimer = setTimeout(
+        () => saveCurrentMessageCategory(),
+        650
+    );
+}
+
+
+async function saveCurrentMessageCategory() {
+    clearTimeout(messageSaveTimer);
+    messageSaveTimer = null;
+
+    if (
+        !messageEditorState ||
+        !currentMessageType ||
+        messageSaveInProgress
+    ) {
+        return true;
+    }
+
+    messageSaveInProgress = true;
+    showMessagesError("");
+    setMessagesSaveState("saving", "Saving...");
+
+    try {
+        const result = await appApi.updateMessageCategory(
+            currentMessageType,
+            collectCurrentMessageCategory()
+        );
+
+        if (!result.success) {
+            throw new Error(
+                result.error || "Could not save custom messages."
+            );
+        }
+
+        messageEditorState = result.state;
+        setMessagesSaveState("saved", "Saved");
+        renderMessageTypeTabs();
+        return true;
+    } catch (error) {
+        showMessagesError(error.message);
+        setMessagesSaveState("error", "Not saved");
+        return false;
+    } finally {
+        messageSaveInProgress = false;
+    }
+}
+
+
+async function flushMessageSave() {
+    if (!messageSaveTimer) {
+        return true;
+    }
+
+    return saveCurrentMessageCategory();
+}
+
+
+async function loadMessages() {
+    const result = await appApi.getMessages();
+
+    if (!result.success) {
+        throw new Error(
+            result.error || "Could not load custom messages."
+        );
+    }
+
+    messageEditorState = result.state;
+    renderMessageEditor();
+}
+
+
+// ----------------------------------------------------
 // Logs
 // ----------------------------------------------------
 
@@ -773,6 +1203,11 @@ els.settingsTab.addEventListener(
     () => showPage("settings")
 );
 
+els.messagesTab.addEventListener(
+    "click",
+    () => showPage("messages")
+);
+
 els.logsTab.addEventListener(
     "click",
     () => showPage("logs")
@@ -884,6 +1319,92 @@ els.restoreDefaults.addEventListener(
 
         renderSettings(result.settings);
         showToast("Roulette settings restored to defaults.");
+    }
+);
+
+
+// ----------------------------------------------------
+// Custom-message events
+// ----------------------------------------------------
+
+els.messageTypeEnabled.addEventListener(
+    "change",
+    async () => {
+        const enabled = Boolean(
+            els.messageTypeEnabled.checked
+        );
+
+        for (const textarea of els.messageList.querySelectorAll(".message-textarea")) {
+            textarea.disabled = !enabled;
+        }
+
+        for (const button of els.messageList.querySelectorAll(".message-delete-button")) {
+            button.disabled = !enabled;
+        }
+
+        els.addMessage.disabled = !enabled;
+        els.messageListWrap.classList.toggle(
+            "personality-disabled",
+            !enabled
+        );
+
+        await saveCurrentMessageCategory();
+        renderMessageEditor();
+    }
+);
+
+els.addMessage.addEventListener(
+    "click",
+    () => {
+        if (!els.messageTypeEnabled.checked) {
+            return;
+        }
+
+        const row = createMessageRow(
+            "New custom message",
+            els.messageList.children.length,
+            true
+        );
+
+        els.messageList.appendChild(row);
+        renumberMessageRows();
+
+        const textarea = row.querySelector(".message-textarea");
+        textarea.focus();
+        textarea.select();
+        scheduleMessageSave();
+    }
+);
+
+els.restoreDefaultMessages.addEventListener(
+    "click",
+    async () => {
+        const confirmed = window.confirm(
+            "Reset every custom message to RouletteBot's shipped defaults?\n\n" +
+            "This also turns custom messages back on for every message type."
+        );
+
+        if (!confirmed) {
+            return;
+        }
+
+        clearTimeout(messageSaveTimer);
+        messageSaveTimer = null;
+        setMessagesSaveState("saving", "Restoring...");
+
+        const result = await appApi.restoreDefaultMessages();
+
+        if (!result.success) {
+            showMessagesError(
+                result.error || "Could not restore default messages."
+            );
+            setMessagesSaveState("error", "Not saved");
+            return;
+        }
+
+        messageEditorState = result.state;
+        renderMessageEditor();
+        showToast("All custom messages restored to defaults.");
     }
 );
 
@@ -1109,6 +1630,16 @@ appApi.onSettingsChanged(data => {
     }
 });
 
+appApi.onMessagesChanged(data => {
+    if (data?.state && !messageSaveInProgress) {
+        messageEditorState = data.state;
+
+        if (currentPage === "messages") {
+            renderMessageEditor();
+        }
+    }
+});
+
 appApi.onLogEntry(entry => {
     addLogEntry(entry);
 });
@@ -1130,10 +1661,11 @@ setInterval(
 
 (async function initialize() {
     try {
-        const [state, settingsResult, logsResult, debugResult] =
+        const [state, settingsResult, messagesResult, logsResult, debugResult] =
             await Promise.all([
                 appApi.getSetupState(),
                 appApi.getSettings(),
+                appApi.getMessages(),
                 appApi.getRecentLogs(750),
                 appApi.getDebugState()
             ]);
@@ -1150,6 +1682,16 @@ setInterval(
         renderSettings(
             settingsResult.settings
         );
+
+        if (!messagesResult.success) {
+            throw new Error(
+                messagesResult.error ||
+                "Could not load custom messages."
+            );
+        }
+
+        messageEditorState = messagesResult.state;
+        renderMessageEditor();
 
         if (logsResult?.success) {
             const combined = [

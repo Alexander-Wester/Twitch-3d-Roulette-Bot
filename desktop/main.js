@@ -36,6 +36,20 @@ const {
 } = require("../src/settings");
 
 const {
+    getEditorState: getMessageEditorState,
+    saveCategory: saveMessageCategory,
+    saveGroupEnabled: saveMessageGroupEnabled,
+    restoreDefaults: restoreDefaultMessages,
+    setMessageStorageDir,
+    onMessagesChanged
+} = require("../src/messageSettings");
+
+const {
+    setDatabaseStorageDir,
+    getDatabasePath
+} = require("../src/database");
+
+const {
     broadcastOverlayMessage,
     getOverlayStatus
 } = require("../src/overlayServer");
@@ -197,6 +211,7 @@ async function getDebugState() {
         nodeVersion: process.versions.node,
         electronVersion: process.versions.electron,
         userDataDirectory: app.getPath("userData"),
+        databasePath: getDatabasePath(),
         botRuntime: getBotStatus(),
         roulette: {
             ...getRouletteState(),
@@ -425,6 +440,71 @@ function registerIpcHandlers() {
                     success: true,
                     settings:
                         restoreDefaultSettings()
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+    );
+
+    ipcMain.handle(
+        "messages:get",
+        async () => ({
+            success: true,
+            state: getMessageEditorState()
+        })
+    );
+
+    ipcMain.handle(
+        "messages:update-category",
+        async (_event, key, category) => {
+            try {
+                return {
+                    success: true,
+                    state: saveMessageCategory(
+                        key,
+                        category
+                    )
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+    );
+
+    ipcMain.handle(
+        "messages:update-group-enabled",
+        async (_event, group, enabled) => {
+            try {
+                return {
+                    success: true,
+                    state: saveMessageGroupEnabled(
+                        group,
+                        enabled
+                    )
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+    );
+
+    ipcMain.handle(
+        "messages:restore-defaults",
+        async () => {
+            try {
+                return {
+                    success: true,
+                    state: restoreDefaultMessages()
                 };
             } catch (error) {
                 return {
@@ -794,7 +874,40 @@ app.whenReady().then(async () => {
         `[App] Rhino's Roulette Bot v${app.getVersion()} starting.`
     );
 
+    const databaseSetup = setDatabaseStorageDir(
+        userDataDirectory,
+        {
+            legacyDatabasePaths: [
+                path.join(
+                    __dirname,
+                    "..",
+                    "data",
+                    "roulette.db"
+                ),
+                path.join(
+                    __dirname,
+                    "..",
+                    "roulette.db"
+                )
+            ]
+        }
+    );
+
+    if (databaseSetup.migratedFrom) {
+        console.log(
+            `[Database] Existing viewer balances/history migrated to ${databaseSetup.databasePath}`
+        );
+    } else {
+        console.log(
+            `[Database] Viewer data location: ${databaseSetup.databasePath}`
+        );
+    }
+
     setSettingsStorageDir(
+        userDataDirectory
+    );
+
+    setMessageStorageDir(
         userDataDirectory
     );
 
@@ -824,6 +937,18 @@ app.whenReady().then(async () => {
                 "settings:changed",
                 {
                     settings,
+                    changedKeys
+                }
+            );
+        }
+    );
+
+    onMessagesChanged(
+        (state, changedKeys) => {
+            sendToRenderer(
+                "messages:changed",
+                {
+                    state,
                     changedKeys
                 }
             );
