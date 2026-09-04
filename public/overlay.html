@@ -89,10 +89,104 @@
             font-weight: 900;
             font-variant-numeric: tabular-nums;
         }
-    </style>
-</head>
+
+        /* ----------------------------------------------------
+           Resolution creator credit
+
+           Hidden during betting/spinning. Appears only after the
+           roulette result resolves, centered below the winner text.
+           ---------------------------------------------------- */
+
+        #resolution-credit {
+            position: absolute;
+            left: 50%;
+            bottom: 11%;
+            transform: translateX(-50%);
+            z-index: 29;
+
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
+
+            width: max-content;
+            max-width: calc(100vw - 40px);
+            padding: 12px 20px 13px;
+
+            text-align: center;
+            font-family: Arial, Helvetica, sans-serif;
+            color: rgba(255, 255, 255, 0.98);
+
+            background: rgba(0, 0, 0, 0.26);
+            border-radius: 10px;
+
+            pointer-events: none;
+            user-select: none;
+
+            text-shadow:
+                0 3px 7px rgba(0, 0, 0, 1),
+                0 0 16px rgba(0, 0, 0, 0.95);
+
+            box-shadow:
+                0 8px 24px rgba(0, 0, 0, 0.48);
+        }
+
+        #resolution-credit.visible {
+            display: flex;
+        }
+
+        #resolution-credit-product {
+            font-size: clamp(24px, 2.7vw, 40px);
+            font-weight: 850;
+            line-height: 1.08;
+            letter-spacing: 0.015em;
+            white-space: nowrap;
+        }
+
+        #resolution-credit-byline {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 11px;
+
+            font-size: clamp(20px, 2.1vw, 32px);
+            font-weight: 700;
+            line-height: 1;
+            white-space: nowrap;
+        }
+
+        #discord-credit-icon {
+            width: clamp(28px, 2.55vw, 39px);
+            height: clamp(28px, 2.55vw, 39px);
+            object-fit: contain;
+            display: block;
+            filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.75));
+        }
+            </style>
+        </head>
 
 <body class="overlay-hidden">
+
+    <div
+        id="resolution-credit"
+        aria-label="Roulette App, Overlay, and Twitch Bot developed by Rhino4W. Discord: Rhino4W"
+    >
+        <div id="resolution-credit-product">
+            Roulette App + Overlay + Twitch Bot
+        </div>
+
+        <div id="resolution-credit-byline">
+            <span>Developed by</span>
+            <img
+                id="discord-credit-icon"
+                src="/assets/discord.png"
+                alt=""
+                onerror="this.style.display='none'"
+            >
+            <span>Rhino4W</span>
+        </div>
+    </div>
 
     <div
         id="betting-panel"
@@ -123,6 +217,11 @@
                 "betting-timer"
             );
 
+        const resolutionCredit =
+            document.getElementById(
+                "resolution-credit"
+            );
+
         let socket = null;
         let currentRoundId = null;
         let bettingEndsAt = 0;
@@ -130,6 +229,20 @@
         const outboundQueue = [];
         const pendingBotMessages = [];
         let physicsReady = false;
+
+
+        function showResolutionCredit() {
+            resolutionCredit.classList.add(
+                "visible"
+            );
+        }
+
+
+        function hideResolutionCredit() {
+            resolutionCredit.classList.remove(
+                "visible"
+            );
+        }
 
 
         function showTable() {
@@ -143,6 +256,8 @@
             bettingPanel.classList.add(
                 "hidden"
             );
+
+            hideResolutionCredit();
 
             document.body.classList.add(
                 "overlay-hidden"
@@ -185,6 +300,7 @@
             currentRoundId = data.roundId;
             bettingEndsAt = data.bettingEndsAt;
 
+            hideResolutionCredit();
             showTable();
 
             bettingPanel.classList.remove(
@@ -290,6 +406,7 @@
                     break;
 
                 case "debugShowTable":
+                    hideResolutionCredit();
                     showTable();
                     bettingPanel.classList.add("hidden");
 
@@ -346,9 +463,17 @@
                     break;
 
                 case "roundResolved":
-                    // roulette.js already shows the physical winner
-                    // immediately. The server will send hideTable
-                    // after the short result display period.
+                    if (
+                        currentRoundId !== null &&
+                        data.roundId !== currentRoundId
+                    ) {
+                        return;
+                    }
+
+                    // roulette.js already shows the resolved pocket/result.
+                    // Reveal the creator credit underneath that announcement
+                    // for the remainder of the result display.
+                    showResolutionCredit();
                     break;
 
                 case "hideTable":

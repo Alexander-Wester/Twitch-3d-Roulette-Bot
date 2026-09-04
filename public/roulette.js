@@ -323,6 +323,8 @@ const DIVIDER_MIDDLE_RADIUS =
 const scene =
     new THREE.Scene();
 
+// The creator credit now appears only after resolution and overlays
+// unused screen space, so the roulette renderer can use the full OBS source.
 const camera =
     new THREE.PerspectiveCamera(
         42,
@@ -414,16 +416,22 @@ winnerDisplay.style.transform =
     "translateX(-50%)";
 
 winnerDisplay.style.padding =
-    "8px 14px";
+    "14px 28px";
 
 winnerDisplay.style.border =
-    "2px solid rgba(218, 190, 104, 0.9)";
+    "3px solid rgba(218, 190, 104, 0.95)";
 
 winnerDisplay.style.borderRadius =
-    "9px";
+    "12px";
 
 winnerDisplay.style.background =
-    "rgba(0, 0, 0, 0.82)";
+    "rgba(0, 0, 0, 0.84)";
+
+winnerDisplay.style.boxShadow =
+    "0 8px 26px rgba(0, 0, 0, 0.50)";
+
+winnerDisplay.style.textShadow =
+    "0 3px 8px rgba(0, 0, 0, 0.95)";
 
 winnerDisplay.style.color =
     "white";
@@ -435,7 +443,7 @@ winnerDisplay.style.fontWeight =
     "900";
 
 winnerDisplay.style.fontSize =
-    "clamp(22px, 5vw, 56px)";
+    "clamp(48px, 8vw, 108px)";
 
 winnerDisplay.style.lineHeight =
     "1";

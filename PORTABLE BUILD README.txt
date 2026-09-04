@@ -1,4 +1,4 @@
-RHINO'S ROULETTE BOT v1.5.0
+RHINO'S ROULETTE BOT v1.5.1
 PORTABLE WINDOWS BUILD
 
 FOR ALEX / THE DEVELOPER
@@ -14,7 +14,7 @@ FOR ALEX / THE DEVELOPER
 4. The builder installs dependencies, creates the Electron app,
    and then creates:
 
-       dist\Rhinos-Roulette-Bot-v1.5.0-win64.zip
+       dist\Rhinos-Roulette-Bot-v1.5.1-win64.zip
 
 That final ZIP is the one to send to the streamer.
 
@@ -24,7 +24,7 @@ The streamer's PC DOES NOT need Node.js, npm, Electron, or Python.
 STREAMER FIRST RUN
 ==================
 
-1. Extract Rhinos-Roulette-Bot-v1.5.0-win64.zip.
+1. Extract Rhinos-Roulette-Bot-v1.5.1-win64.zip.
 2. Run:
        Rhinos Roulette Bot.exe
 3. Connect the Broadcaster Twitch account.

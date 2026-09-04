@@ -247,6 +247,67 @@ const server = http.createServer(
             return;
         }
 
+
+        // ---------------------------------------------
+        // Optional Discord creator-credit icon
+        //
+        // Add the image at:
+        // public/assets/discord.png
+        // ---------------------------------------------
+
+        if (request.url === "/assets/discord.png") {
+
+            const discordIconPath =
+                path.join(
+                    __dirname,
+                    "..",
+                    "public",
+                    "assets",
+                    "discord.png"
+                );
+
+            fs.readFile(
+                discordIconPath,
+                (error, data) => {
+
+                    if (error) {
+                        response.writeHead(
+                            404,
+                            {
+                                "Content-Type":
+                                    "text/plain",
+                                "Cache-Control":
+                                    "no-store"
+                            }
+                        );
+
+                        response.end(
+                            "Discord icon not found."
+                        );
+
+                        return;
+                    }
+
+                    response.writeHead(
+                        200,
+                        {
+                            "Content-Type":
+                                "image/png",
+                            "Cache-Control":
+                                "no-store, no-cache, must-revalidate",
+                            "Pragma": "no-cache",
+                            "Expires": "0"
+                        }
+                    );
+
+                    response.end(data);
+                }
+            );
+
+            return;
+        }
+
+
         if (
             request.url === "/overlay" ||
             request.url === "/overlay/"

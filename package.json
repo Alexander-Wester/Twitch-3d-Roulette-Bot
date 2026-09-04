@@ -1,6 +1,6 @@
 {
   "name": "twitch-3d-roulette-bot",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Desktop Twitch roulette bot with a physics-driven OBS overlay.",
   "main": "desktop/main.js",
   "scripts": {
@@ -9,7 +9,7 @@
     "auth:bot": "node src/twitchAuth.js bot",
     "auth:broadcaster": "node src/twitchAuth.js broadcaster",
     "test": "echo \"No automated tests configured yet\"",
-    "package:win": "electron-packager . \"Rhinos Roulette Bot\" --platform=win32 --arch=x64 --out=dist --overwrite --prune=true --ignore=\"^/dist($|/)\" --ignore=\"^/data($|/)\" --ignore=\"^/\\.env$\" --ignore=\"^/tokens\\.json$\" --ignore=\"\\.tokens\\.json$\" --ignore=\"roulette\\.db$\""
+    "package:win": "npx --yes @electron/packager@20.3.0 . \"Rhinos Roulette Bot\" --platform=win32 --arch=x64 --out=dist --overwrite --prune=true --ignore=\"^/dist($|/)\" --ignore=\"^/data($|/)\" --ignore=\"^/\\.env$\" --ignore=\"^/tokens\\.json$\" --ignore=\"\\.tokens\\.json$\" --ignore=\"roulette\\.db$\""
   },
   "repository": {
     "type": "git",
@@ -35,7 +35,6 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
-    "electron": "^44.1.1",
-    "@electron/packager": "20.3.0"
+    "electron": "^44.1.1"
   }
 }

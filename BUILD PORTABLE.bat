@@ -51,7 +51,7 @@ if errorlevel 1 (
 )
 
 set "APPDIR=dist\Rhinos Roulette Bot-win32-x64"
-set "ZIPFILE=dist\Rhinos-Roulette-Bot-v1.5.0-win64.zip"
+set "ZIPFILE=dist\Rhinos-Roulette-Bot-v1.5.1-win64.zip"
 
 if not exist "%APPDIR%\Rhinos Roulette Bot.exe" (
     echo.
